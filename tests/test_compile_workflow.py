@@ -224,9 +224,7 @@ class TestStaticApiKeyApp:
                 assert "resolve_auth" not in content, (
                     f"{path}: resolve_auth() must not be used under CDP default"
                 )
-                assert "PROFILE_SLUG" in content, (
-                    f"{path}: PROFILE_SLUG constant must be embedded"
-                )
+                assert "PROFILE_SLUG" in content, f"{path}: PROFILE_SLUG constant must be embedded"
 
     def test_manifest_profile_slug_not_uuid(self) -> None:
         auth = self.manifest["auth"]
@@ -524,7 +522,9 @@ class TestCdpIsDefault:
         self.manifest, self.files = _compile(har, app_slug="defapp", profile_slug="defapp")
 
     def test_execute_runtime_module_written(self) -> None:
-        assert "noui_runtime/execute.py" in self.files, "CDP default must write noui_runtime/execute.py"
+        assert "noui_runtime/execute.py" in self.files, (
+            "CDP default must write noui_runtime/execute.py"
+        )
 
     def test_no_cdp_runtime_written(self) -> None:
         assert "noui_runtime/cdp.py" not in self.files, "CDP mode should no longer write cdp.py"
@@ -550,16 +550,12 @@ class TestCdpIsDefault:
     def test_no_websockets_in_operations(self) -> None:
         for p, content in self.files.items():
             if p.startswith("operations/") and p.endswith(".py") and p != "operations/__init__.py":
-                assert "websockets" not in content, (
-                    f"{p}: websockets must not appear in operations"
-                )
+                assert "websockets" not in content, f"{p}: websockets must not appear in operations"
 
     def test_operations_have_profile_slug(self) -> None:
         for p, content in self.files.items():
             if p.startswith("operations/") and p.endswith(".py") and p != "operations/__init__.py":
-                assert "PROFILE_SLUG" in content, (
-                    f"{p}: operations must reference PROFILE_SLUG"
-                )
+                assert "PROFILE_SLUG" in content, f"{p}: operations must reference PROFILE_SLUG"
 
     def test_manifest_execution_strategy(self) -> None:
         assert self.manifest["auth"]["execution_strategy"] == "tabby_execute_fetch"

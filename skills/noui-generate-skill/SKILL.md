@@ -145,7 +145,7 @@ Removes the skill from that specific agent's skills directory. If you installed 
 | `skill install` fails with "not found" | Run `skill list` to confirm the exact `skill_id`. `install` looks up by `skill_id` in `manifest.json`, not by folder name (though they are usually identical) |
 | Operation fails with `Missing TABBY_CLIENT_ID` | Set `TABBY_CLIENT_ID` / `TABBY_CLIENT_SECRET` in `noui/.env` or `~/.config/noui/.env`; the installed skill's runtime walks up from its own file to find these |
 | Operation fails with `Tabby returned empty credentials` | The Tabby session worker isn't live. Run `tabby session ensure --profile <slug>` |
-| Operation fails with 429 / bot detection | Rewrite the operation to use CDP browser-side `fetch()` — run `/noui-generalize` |
+| Operation fails with 429 / bot detection | Re-export with the default execution mode (execute_fetch via Tabby browser) — run `/noui-generalize` if already exported |
 | Need to pass a different Tabby profile for testing | Regenerate with `workflow export --as skill --profile-slug <other-slug>`, then re-install — re-exporting with a different slug updates `auth_plan.json` |
 | Installed to `codex` but Claude Code can't see the skill | Expected. Claude Code doesn't read `.agents/skills/`. Run `skill install <id> claude-code` too. |
 | Installed to `agents` but Cline can't see the skill | Expected. Cline's docs only list `.cline/skills/` and `.claude/skills/` as discovery paths. Run `skill install <id> cline` too. |

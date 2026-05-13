@@ -7,7 +7,7 @@ description: Use this skill when the user wants to search for hotels on Expedia 
 
 Search Expedia for available hotels by destination and dates using an authenticated Tabby browser session. Returns a Hotel-Search URL and extracted listings (name, nightly price, total price, rating, reviews, refundable flag, link).
 
-This skill drives the real Expedia site inside a Tabby-managed browser via CDP (Chrome DevTools Protocol) instead of a Python HTTP client. That is intentional: Expedia sits behind Akamai, which blocks non-browser TLS fingerprints. Do not try to port the operations to `httpx` or `requests` — you will get 429 Too Many Requests.
+This skill drives the real Expedia site inside a Tabby-managed browser via the `execute/fetch` endpoint instead of a Python HTTP client. That is intentional: Expedia sits behind Akamai, which blocks non-browser TLS fingerprints. Do not try to port the operations to `httpx` or `requests` — you will get 429 Too Many Requests.
 
 ## Prerequisites
 
@@ -78,8 +78,8 @@ Prints a JSON object to stdout on success. Exits non-zero on failure with a diag
 
 ## Troubleshooting
 
-- **`No Expedia browser session found. Is Tabby running?`** — no Tabby CDP target found at `localhost:9222` matching `expedia.com`. Run `tabby session ensure --profile expedia` and retry.
-- **`Expedia API returned 429: ...`** — Akamai is rate-limiting even through the browser. This is rare via CDP; if it happens repeatedly the Tabby session may need to rotate IPs or the profile needs re-recording.
+- **`No healthy Tabby session for profile "expedia"`** — no healthy session found. Run `tabby session ensure --profile expedia` and retry.
+- **`Expedia API returned 429: ...`** — Akamai is rate-limiting even through the browser. This is rare via the execute endpoint; if it happens repeatedly the Tabby session may need to rotate IPs or the profile needs re-recording.
 - **Empty `listings`, non-zero `listings_count`** — Expedia changed its DOM. The DOM-scrape selectors in `search_hotels.py` (`[data-stid="lodging-card-responsive"]`) need updating. Report to the NoUI maintainers; do not guess at selectors.
 - **`auth_plan.json missing profile_slug`** — this skill was mis-installed. The `auth_plan.json` file sitting next to `noui_runtime/` must have `profile_slug: "expedia"`. Reinstall the skill.
 

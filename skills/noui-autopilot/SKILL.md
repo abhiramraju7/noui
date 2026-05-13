@@ -5,13 +5,24 @@ description: Use this skill when the user wants to automatically record a browse
 
 # NoUI Autopilot Recording
 
-You ARE the browser automation agent. You will drive a real Chrome browser through the NoUI extension to record a workflow, then compile it into a FastMCP server. No separate agent or API key is needed — you control the browser directly via HTTP commands.
+You ARE the browser automation agent. You will drive a real browser to record a workflow, then compile it into a FastMCP server. You control the browser directly via HTTP commands.
 
 All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`.
 
-**Prerequisite:** `/noui-setup` must be complete. Chrome must be open with the NoUI extension loaded and connected to `localhost:8002`.
-
 **Execution mode:** autopilot-exported servers inherit the execute-fetch default — generated operations run inside Tabby's browser session via `noui_runtime.execute`. Pass `--execution-mode http` to `noui autopilot export` if you need the legacy `httpx + resolve_auth` path. See `/noui-record-workflow` → *How Execution Works*.
+
+### Browser driver modes
+
+The autopilot has two browser driver modes, selected automatically by environment:
+
+| Mode | When | Prerequisites |
+|------|------|---------------|
+| **Tabby** (headless, no extension) | `TABBY_API_HOST` + `TABBY_CLIENT_ID` + `TABBY_PROFILE_ID` are set | A healthy Tabby session for the profile. No Chrome extension needed. |
+| **Extension** (local Chrome) | Tabby env vars not set | Chrome with the NoUI extension loaded and connected to `localhost:8002`. `/noui-setup` must be complete. |
+
+In Tabby mode, browser commands go to Tabby's `POST /execute/browser` endpoint — the worker drives Playwright directly. HAR capture is server-side (`har_start`/`har_stop`), no extension capture session needed. This enables headless/server-side autopilot for agent-builder pipelines.
+
+In extension mode (the original path), commands go through the Chrome extension's in-memory queue. HAR capture is extension-managed. The "Verify Extension" preflight step (Step 1.5) applies only to this mode.
 
 ---
 

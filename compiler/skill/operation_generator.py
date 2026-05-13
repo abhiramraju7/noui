@@ -26,16 +26,16 @@ def render_skill_operation(td: dict, *, auth_plan: dict, execution_mode: str = "
     works from inside the Skill directory, with `noui_runtime/` one level up.
 
     `execution_mode` matches the MCP compiler:
-      - "cdp" (default): execute inside Tabby's browser via CDP
+      - "cdp" (default): execute inside Tabby's browser via execute/fetch endpoint
       - "http" (legacy): execute via httpx + resolve_auth()
     """
     if execution_mode == "cdp":
-        return _render_skill_operation_cdp(td)
+        return _render_skill_operation_cdp(td, auth_plan=auth_plan)
     return _render_skill_operation_http(td, auth_plan=auth_plan)
 
 
-def _render_skill_operation_cdp(td: dict) -> str:
-    """Render a skill op that executes inside Tabby's browser via CDP."""
+def _render_skill_operation_cdp(td: dict, *, auth_plan: dict) -> str:
+    """Render a skill op that executes inside Tabby's browser via execute/fetch."""
     name = td["name"]
     method = td["method"].upper()
     path_template = td["path"]
@@ -45,7 +45,7 @@ def _render_skill_operation_cdp(td: dict) -> str:
     request_headers: list[dict] = td.get("request_headers", [])
     description = td.get("description", "")
 
-    netloc = urlparse(base_url).netloc if base_url else ""
+    profile_slug = auth_plan.get("profile_slug", "") if auth_plan else ""
 
     static_headers = {
         h["name"]: h["value"] for h in request_headers if h.get("name") and h.get("value")
@@ -65,7 +65,7 @@ def _render_skill_operation_cdp(td: dict) -> str:
         f"Path: {path_template}",
         "",
         "Skill-variant entry point. Executes inside Tabby's authenticated browser",
-        f"via CDP. Requires a live Tabby session with a page open on {netloc or 'the target domain'}.",
+        "via the execute/fetch endpoint. Requires a live Tabby session for the configured profile.",
         '"""',
         "",
         "from __future__ import annotations",
@@ -86,10 +86,10 @@ def _render_skill_operation_cdp(td: dict) -> str:
         "if str(_SKILL_ROOT) not in sys.path:",
         "    sys.path.insert(0, str(_SKILL_ROOT))",
         "",
-        "from noui_runtime.cdp import cdp_fetch, find_page  # noqa: E402",
+        "from noui_runtime.execute import execute_fetch  # noqa: E402",
         "",
         f"BASE_URL = {base_url!r}",
-        f"CDP_HOST_MATCH = {netloc!r}",
+        f"PROFILE_SLUG = {profile_slug!r}",
         "",
         "",
     ]
@@ -111,29 +111,23 @@ def _render_skill_operation_cdp(td: dict) -> str:
 
     if has_body:
         body_dict = ", ".join(f"{p['name']!r}: {p['name']}" for p in body_params)
-        # Content type influences Content-Type header only; body is JSON-encoded
-        # by cdp_fetch regardless.
         _ = content_type
         lines.append(f"    body = {{{body_dict}}}")
 
     if static_headers:
         lines.append(f"    headers = {static_headers!r}")
     else:
-        lines.append("    headers: dict[str, str] = {}")
+        lines.append("    headers: dict[str, str] | None = None")
 
-    lines.append("    ws_url = await find_page(CDP_HOST_MATCH)")
-    lines.append("    if not ws_url:")
-    lines.append(
-        "        raise RuntimeError("
-        'f"No Tabby page matching {CDP_HOST_MATCH!r}. '
-        "Open the site in Tabby (run `tabby session ensure --profile <slug>`) "
-        'or re-export with --execution-mode http.")'
-    )
-
-    call_kwargs: list[str] = ["ws_url", "url", f'method="{method}"', "headers=headers"]
+    call_kwargs: list[str] = [
+        "PROFILE_SLUG",
+        "url",
+        f'method="{method}"',
+        "headers=headers",
+    ]
     if has_body:
         call_kwargs.append("body=body")
-    lines.append(f"    return await cdp_fetch({', '.join(call_kwargs)})")
+    lines.append(f"    return await execute_fetch({', '.join(call_kwargs)})")
     lines.append("")
     lines.append("")
 

@@ -209,23 +209,23 @@ class TestStaticApiKeyApp:
             "runtime_identifier must be the slug, never the UUID"
         )
 
-    def test_operations_use_cdp_fetch(self) -> None:
-        """Default execution mode (cdp) wires operations through noui_runtime.cdp."""
+    def test_operations_use_execute_fetch(self) -> None:
+        """Default execution mode (cdp) wires operations through noui_runtime.execute."""
         for path, content in self.files.items():
             if (
                 path.startswith("operations/")
                 and path.endswith(".py")
                 and path != "operations/__init__.py"
             ):
-                assert "from noui_runtime.cdp import" in content, (
-                    f"{path} must import from noui_runtime.cdp under CDP default"
+                assert "from noui_runtime.execute import" in content, (
+                    f"{path} must import from noui_runtime.execute under CDP default"
                 )
-                assert "cdp_fetch" in content, f"{path} must call cdp_fetch()"
+                assert "execute_fetch" in content, f"{path} must call execute_fetch()"
                 assert "resolve_auth" not in content, (
                     f"{path}: resolve_auth() must not be used under CDP default"
                 )
-                assert "TABBY_PROFILE_ID" not in content, (
-                    f"{path}: TABBY_PROFILE_ID constant must not be embedded"
+                assert "PROFILE_SLUG" in content, (
+                    f"{path}: PROFILE_SLUG constant must be embedded"
                 )
 
     def test_manifest_profile_slug_not_uuid(self) -> None:
@@ -509,7 +509,7 @@ class TestOutputFiles:
 
 
 class TestCdpIsDefault:
-    """Not passing execution_mode must produce CDP-based operations and a cdp.py runtime."""
+    """Not passing execution_mode must produce execute-adapter operations and execute.py runtime."""
 
     def setup_method(self) -> None:
         har = _har(
@@ -523,10 +523,13 @@ class TestCdpIsDefault:
         )
         self.manifest, self.files = _compile(har, app_slug="defapp", profile_slug="defapp")
 
-    def test_cdp_runtime_module_written(self) -> None:
-        assert "noui_runtime/cdp.py" in self.files, "CDP default must write noui_runtime/cdp.py"
+    def test_execute_runtime_module_written(self) -> None:
+        assert "noui_runtime/execute.py" in self.files, "CDP default must write noui_runtime/execute.py"
 
-    def test_operations_import_cdp(self) -> None:
+    def test_no_cdp_runtime_written(self) -> None:
+        assert "noui_runtime/cdp.py" not in self.files, "CDP mode should no longer write cdp.py"
+
+    def test_operations_import_execute_fetch(self) -> None:
         op_paths = [
             p
             for p in self.files
@@ -534,8 +537,8 @@ class TestCdpIsDefault:
         ]
         assert op_paths, "expected at least one operation"
         for p in op_paths:
-            assert "from noui_runtime.cdp import" in self.files[p]
-            assert "cdp_fetch" in self.files[p]
+            assert "from noui_runtime.execute import" in self.files[p]
+            assert "execute_fetch" in self.files[p]
 
     def test_no_httpx_in_operations(self) -> None:
         for p, content in self.files.items():
@@ -544,19 +547,33 @@ class TestCdpIsDefault:
                     f"{p}: httpx must not appear in CDP-default operations"
                 )
 
-    def test_manifest_execution_strategy_is_cdp(self) -> None:
-        assert self.manifest["auth"]["execution_strategy"] == "cdp_browser_session"
+    def test_no_websockets_in_operations(self) -> None:
+        for p, content in self.files.items():
+            if p.startswith("operations/") and p.endswith(".py") and p != "operations/__init__.py":
+                assert "websockets" not in content, (
+                    f"{p}: websockets must not appear in operations"
+                )
+
+    def test_operations_have_profile_slug(self) -> None:
+        for p, content in self.files.items():
+            if p.startswith("operations/") and p.endswith(".py") and p != "operations/__init__.py":
+                assert "PROFILE_SLUG" in content, (
+                    f"{p}: operations must reference PROFILE_SLUG"
+                )
+
+    def test_manifest_execution_strategy(self) -> None:
+        assert self.manifest["auth"]["execution_strategy"] == "tabby_execute_fetch"
 
     def test_manifest_auth_strategy_unchanged(self) -> None:
         """auth.strategy continues to describe the credential-source strategy."""
         assert self.manifest["auth"]["strategy"] == "static_secret_header"
 
-    def test_cdp_runtime_compiles(self) -> None:
+    def test_execute_runtime_compiles(self) -> None:
         import py_compile
         import tempfile
 
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-            f.write(self.files["noui_runtime/cdp.py"])
+            f.write(self.files["noui_runtime/execute.py"])
             path = f.name
         py_compile.compile(path, doraise=True)
 
@@ -589,8 +606,10 @@ class TestHttpExecutionMode:
                 assert "import httpx" in content
                 assert "resolve_auth" in content
                 assert "from noui_runtime.cdp" not in content
+                assert "from noui_runtime.execute" not in content
 
-    def test_no_cdp_runtime_written(self) -> None:
+    def test_no_execute_runtime_written(self) -> None:
+        assert "noui_runtime/execute.py" not in self.files
         assert "noui_runtime/cdp.py" not in self.files
 
     def test_manifest_execution_strategy_mirrors_auth_strategy(self) -> None:

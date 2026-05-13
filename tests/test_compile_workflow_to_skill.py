@@ -303,8 +303,8 @@ class TestSharedRuntime:
         mcp_auth = (mcp_out / "noui_runtime" / "auth.py").read_bytes()
         assert skill_auth == mcp_auth
 
-    def test_cdp_py_matches_mcp_output(self) -> None:
-        """noui_runtime/cdp.py must be byte-identical for skill and MCP outputs."""
+    def test_execute_py_matches_mcp_output(self) -> None:
+        """noui_runtime/execute.py must be byte-identical for skill and MCP outputs."""
         from compiler.mcp.server_generator import compile_workflow
 
         har = _har([_entry("https://api.example.com/v1/widgets")])
@@ -330,9 +330,9 @@ class TestSharedRuntime:
             url_events=[],
             output_dir=str(mcp_out),
         )
-        skill_cdp = (skill_out / "noui_runtime" / "cdp.py").read_bytes()
-        mcp_cdp = (mcp_out / "noui_runtime" / "cdp.py").read_bytes()
-        assert skill_cdp == mcp_cdp
+        skill_execute = (skill_out / "noui_runtime" / "execute.py").read_bytes()
+        mcp_execute = (mcp_out / "noui_runtime" / "execute.py").read_bytes()
+        assert skill_execute == mcp_execute
 
 
 # ---------------------------------------------------------------------------
@@ -341,22 +341,23 @@ class TestSharedRuntime:
 
 
 class TestSkillCdpDefault:
-    """Skill compiler must match the MCP compiler's CDP default."""
+    """Skill compiler must match the MCP compiler's execute-fetch default."""
 
-    def test_cdp_runtime_written(self) -> None:
+    def test_execute_runtime_written(self) -> None:
         out, _ = _compile(_har([_entry("https://api.example.com/v1/widgets")]))
-        assert (out / "noui_runtime" / "cdp.py").is_file()
+        assert (out / "noui_runtime" / "execute.py").is_file()
+        assert not (out / "noui_runtime" / "cdp.py").exists()
 
-    def test_operations_import_cdp(self) -> None:
+    def test_operations_import_execute_fetch(self) -> None:
         out, manifest = _compile(_har([_entry("https://api.example.com/v1/widgets?id=1")]))
         op_name = manifest["operations"][0]["name"]
         src = (out / "operations" / f"{op_name}.py").read_text()
-        assert "from noui_runtime.cdp import" in src
-        assert "cdp_fetch" in src
+        assert "from noui_runtime.execute import" in src
+        assert "execute_fetch" in src
         assert "import httpx" not in src
         assert "resolve_auth" not in src
 
-    def test_manifest_execution_strategy_cdp(self) -> None:
+    def test_manifest_execution_strategy(self) -> None:
         har = _har(
             [
                 _entry(
@@ -366,7 +367,7 @@ class TestSkillCdpDefault:
             ]
         )
         _, manifest = _compile(har, profile_slug="example")
-        assert manifest["auth"]["execution_strategy"] == "cdp_browser_session"
+        assert manifest["auth"]["execution_strategy"] == "tabby_execute_fetch"
 
 
 class TestSkillHttpExecutionMode:
@@ -390,12 +391,14 @@ class TestSkillHttpExecutionMode:
         assert "import httpx" in src
         assert "resolve_auth" in src
         assert "from noui_runtime.cdp" not in src
+        assert "from noui_runtime.execute" not in src
 
-    def test_no_cdp_runtime_written(self) -> None:
+    def test_no_execute_runtime_written(self) -> None:
         out, _ = _compile(
             _har([_entry("https://api.example.com/widgets")]),
             execution_mode="http",
         )
+        assert not (out / "noui_runtime" / "execute.py").exists()
         assert not (out / "noui_runtime" / "cdp.py").exists()
 
     def test_manifest_execution_strategy_mirrors_auth_strategy(self) -> None:

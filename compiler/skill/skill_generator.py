@@ -30,7 +30,7 @@ from compiler.mcp.api_doc_generator import generate_api_markdown
 from compiler.mcp.auth_plan import generate_auth_plan
 from compiler.mcp.har_to_tools import har_to_tool_defs
 from compiler.runtime.auth_adapter import generate_auth_adapter
-from compiler.runtime.cdp_adapter import generate_cdp_adapter
+from compiler.runtime.execute_adapter import generate_execute_adapter
 from compiler.skill.operation_generator import render_skill_operation
 from compiler.skill.skill_md_generator import render_skill_md
 
@@ -137,13 +137,11 @@ def compile_workflow_to_skill(
         generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
     )
     if execution_mode == "cdp":
-        (runtime_dir / "cdp.py").write_text(generate_cdp_adapter(), encoding="utf-8")
+        (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
 
     # 4. pyproject.toml + .python-version — per-skill Python environment (retro D1).
-    # Needs httpx for any CDP or HTTP operation; websockets only for CDP mode.
+    # Needs httpx for any execution mode (execute endpoint or direct HTTP).
     pyproject_deps = ['"httpx>=0.27"']
-    if execution_mode == "cdp":
-        pyproject_deps.append('"websockets>=12"')
     pyproject_toml = (
         f"[project]\n"
         f'name = "{skill_id}"\n'
@@ -242,14 +240,14 @@ def compile_workflow_to_skill(
         *op_files,
     ]
     if execution_mode == "cdp":
-        all_files.append("noui_runtime/cdp.py")
+        all_files.append("noui_runtime/execute.py")
     if auth_plan:
         all_files.append("auth_plan.json")
 
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
     execution_strategy = (
-        "cdp_browser_session" if execution_mode == "cdp" else resolved_auth_strategy
+        "tabby_execute_fetch" if execution_mode == "cdp" else resolved_auth_strategy
     )
 
     manifest: dict = {

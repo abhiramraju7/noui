@@ -11,3 +11,4 @@ backend/data/
 .noui-backend.log
 poetry.lock
 .coverage
+.claude/worktrees/*

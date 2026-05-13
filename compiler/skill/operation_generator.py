@@ -16,8 +16,6 @@ payloads: exits 2 (still prints the JSON). On success: exits 0.
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 
 def render_skill_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp") -> str:
     """Render the full Python source for a single Skill operation.

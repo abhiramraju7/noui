@@ -21,7 +21,6 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 from compiler.mcp.api_doc_generator import generate_api_markdown
 from compiler.mcp.auth_plan import generate_auth_plan

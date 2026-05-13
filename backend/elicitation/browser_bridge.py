@@ -2,17 +2,111 @@
 
 Commands are created by MCP tool handlers and consumed by the Chrome extension
 via polling. Results flow back through asyncio.Event synchronization.
+
+When TABBY_API_HOST, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set, commands
+are routed to Tabby's POST /execute/browser endpoint instead — no extension needed.
 """
 
 import asyncio
 import logging
+import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT_SECONDS = 30
+
+# ---------------------------------------------------------------------------
+# Tabby driver configuration
+# ---------------------------------------------------------------------------
+
+_agent_token_cache: dict[str, any] = {"token": "", "expires_at": 0.0}
+
+
+def _use_tabby_driver() -> bool:
+    return bool(
+        os.environ.get("TABBY_API_HOST")
+        and os.environ.get("TABBY_CLIENT_ID")
+        and os.environ.get("TABBY_PROFILE_ID")
+    )
+
+
+async def _get_agent_token() -> str:
+    """Exchange client credentials for an agent bearer token, with caching."""
+    now = time.time()
+    if _agent_token_cache["token"] and _agent_token_cache["expires_at"] > now + 30:
+        return _agent_token_cache["token"]
+
+    api_host = os.environ["TABBY_API_HOST"].rstrip("/")
+    client_id = os.environ["TABBY_CLIENT_ID"]
+    client_secret = os.environ["TABBY_CLIENT_SECRET"]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{api_host}/auth/agent-token",
+            json={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    token = data.get("access_token") or data.get("token", "")
+    if not token:
+        raise RuntimeError(f"POST /auth/agent-token returned no token: {data}")
+
+    # Cache for ~50 minutes (agent tokens default to 1 hour TTL)
+    _agent_token_cache["token"] = token
+    _agent_token_cache["expires_at"] = now + 3000
+
+    return token
+
+
+async def _execute_command_via_tabby(command_type: str, params: dict) -> dict:
+    """Execute a browser command via Tabby's POST /execute/browser endpoint.
+
+    Returns the same {success, data, error} shape as the extension driver.
+    """
+    api_host = os.environ["TABBY_API_HOST"].rstrip("/")
+    profile_id = os.environ["TABBY_PROFILE_ID"]
+    token = await _get_agent_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{api_host}/execute/browser",
+            json={
+                "profile_id": profile_id,
+                "command": command_type,
+                "params": params,
+                "timeout_ms": COMMAND_TIMEOUT_SECONDS * 1000,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=COMMAND_TIMEOUT_SECONDS + 5,
+        )
+
+    if resp.status_code == 409:
+        raise RuntimeError(
+            f"Tabby session conflict: {resp.text}. Another consumer may be driving this session."
+        )
+    if resp.status_code == 429:
+        raise RuntimeError(f"Rate limited by Tabby: {resp.text}")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Tabby execute/browser failed ({resp.status_code}): {resp.text[:500]}")
+
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Extension driver (original queue-based approach)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -68,12 +162,8 @@ def set_result(cmd_id: str, result: dict) -> bool:
     return True
 
 
-async def execute_command(command_type: str, params: dict) -> dict:
-    """Create a command, wait for the extension to execute it, return the result.
-
-    Raises:
-        TimeoutError: If the extension does not respond within COMMAND_TIMEOUT_SECONDS.
-    """
+async def _execute_command_via_extension(command_type: str, params: dict) -> dict:
+    """Create a command, wait for the extension to execute it, return the result."""
     cmd = create_command(command_type, params)
     try:
         await asyncio.wait_for(cmd.event.wait(), timeout=COMMAND_TIMEOUT_SECONDS)
@@ -86,3 +176,27 @@ async def execute_command(command_type: str, params: dict) -> dict:
         ) from None
     assert cmd.result is not None
     return cmd.result
+
+
+# ---------------------------------------------------------------------------
+# Public API — routes to Tabby or extension based on environment
+# ---------------------------------------------------------------------------
+
+
+async def execute_command(command_type: str, params: dict) -> dict:
+    """Execute a browser command, routing to Tabby or the extension.
+
+    When TABBY_API_HOST, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set,
+    commands go to Tabby's POST /execute/browser. Otherwise, they go to
+    the Chrome extension via the in-memory queue.
+
+    Raises:
+        TimeoutError: If the extension does not respond within COMMAND_TIMEOUT_SECONDS.
+        RuntimeError: If the Tabby driver encounters an error.
+    """
+    if _use_tabby_driver():
+        logger.debug("Routing command '%s' via Tabby driver", command_type)
+        return await _execute_command_via_tabby(command_type, params)
+
+    logger.debug("Routing command '%s' via extension driver", command_type)
+    return await _execute_command_via_extension(command_type, params)

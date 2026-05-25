@@ -112,7 +112,7 @@ async def _get_agent_token() -> str:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{_tabby_api_host()}/auth/agent-token",
-            json={"client_id": client_id, "client_secret": client_secret},
+            json={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
             timeout=10,
         )
         resp.raise_for_status()

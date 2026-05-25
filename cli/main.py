@@ -574,6 +574,15 @@ def _tabby_http(
         ) from exc
 
 
+def _is_tabby_mode() -> bool:
+    """True when all three Tabby env vars are set (headless browser driver)."""
+    return bool(
+        os.environ.get("TABBY_API_HOST")
+        and os.environ.get("TABBY_CLIENT_ID")
+        and os.environ.get("TABBY_PROFILE_ID")
+    )
+
+
 def _tabby_alive() -> bool:
     try:
         with urllib.request.urlopen(TABBY_API_HOST + "/health/live", timeout=3) as resp:
@@ -1620,77 +1629,93 @@ def cmd_autopilot_start_capture(args: argparse.Namespace) -> int:
         print(_red(f"Failed to start capture: {exc}"))
         return 1
 
-    # Start HAR + click tracking via extension (best effort)
+    # Start HAR + click tracking
     har_started = False
-    try:
-        result = _http(
-            "POST",
-            "/browser-commands/execute",
-            {
-                "command_type": "start_capture_session",
-                "params": {
-                    "projectId": project_id,
-                    "processId": process_id,
-                    "captureSessionId": cs_id,
-                },
-            },
-            timeout=10,
-        )
-        # The execute endpoint returns HTTP 200 even on extension errors —
-        # check the success field to detect failures.
-        if isinstance(result, dict) and result.get("success") is False:
-            raise RuntimeError(result.get("error", "Extension command failed"))
-        har_started = True
-    except Exception:
-        # Fallback: try individual commands
+    if _is_tabby_mode():
+        # Tabby mode: use the backend's start-capture endpoint which sends
+        # har_start to the worker.  Extension commands are not supported.
         try:
             _http(
                 "POST",
-                "/browser-commands/execute",
+                "/autopilot-recordings/start-capture",
                 {
-                    "command_type": "set_capture_state",
-                    "params": {
-                        "projectId": project_id,
-                        "processId": process_id,
-                        "captureSessionId": cs_id,
-                    },
+                    "capture_session_id": cs_id,
+                    "project_id": project_id,
+                    "process_id": process_id,
                 },
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {
-                    "command_type": "start_har_capture",
-                    "params": {"captureSessionId": cs_id},
-                },
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {
-                    "command_type": "inject_click_tracker",
-                    "params": {},
-                },
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {
-                    "command_type": "start_url_monitoring",
-                    "params": {
-                        "projectId": project_id,
-                        "processId": process_id,
-                        "captureSessionId": cs_id,
-                    },
-                },
-                timeout=10,
+                timeout=15,
             )
             har_started = True
         except Exception as exc:
-            print(_yellow(f"  Extension not responding — HAR capture not started: {exc}"))
+            print(_yellow(f"  Tabby HAR capture not started: {exc}"))
+    else:
+        # Extension mode: send commands to the Chrome extension
+        try:
+            result = _http(
+                "POST",
+                "/browser-commands/execute",
+                {
+                    "command_type": "start_capture_session",
+                    "params": {
+                        "projectId": project_id,
+                        "processId": process_id,
+                        "captureSessionId": cs_id,
+                    },
+                },
+                timeout=10,
+            )
+            if isinstance(result, dict) and result.get("success") is False:
+                raise RuntimeError(result.get("error", "Extension command failed"))
+            har_started = True
+        except Exception:
+            try:
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "set_capture_state",
+                        "params": {
+                            "projectId": project_id,
+                            "processId": process_id,
+                            "captureSessionId": cs_id,
+                        },
+                    },
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "start_har_capture",
+                        "params": {"captureSessionId": cs_id},
+                    },
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "inject_click_tracker",
+                        "params": {},
+                    },
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "start_url_monitoring",
+                        "params": {
+                            "projectId": project_id,
+                            "processId": process_id,
+                            "captureSessionId": cs_id,
+                        },
+                    },
+                    timeout=10,
+                )
+                har_started = True
+            except Exception as exc:
+                print(_yellow(f"  Extension not responding — HAR capture not started: {exc}"))
 
     print()
     print(_bold("Capture started:"))
@@ -2104,68 +2129,84 @@ def cmd_autopilot_resume_capture(args: argparse.Namespace) -> int:
         print(_red(f"Failed to start capture: {exc}"))
         return 1
 
-    # Start HAR + click tracking via extension
+    # Start HAR + click tracking
     har_started = False
-    try:
-        result = _http(
-            "POST",
-            "/browser-commands/execute",
-            {
-                "command_type": "start_capture_session",
-                "params": {
-                    "projectId": project_id,
-                    "processId": process_id,
-                    "captureSessionId": cs_id,
-                },
-            },
-            timeout=10,
-        )
-        if isinstance(result, dict) and result.get("success") is False:
-            raise RuntimeError(result.get("error", "Extension command failed"))
-        har_started = True
-    except Exception:
+    if _is_tabby_mode():
         try:
             _http(
                 "POST",
-                "/browser-commands/execute",
+                "/autopilot-recordings/start-capture",
                 {
-                    "command_type": "set_capture_state",
-                    "params": {
-                        "projectId": project_id,
-                        "processId": process_id,
-                        "captureSessionId": cs_id,
-                    },
+                    "capture_session_id": cs_id,
+                    "project_id": project_id,
+                    "process_id": process_id,
                 },
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {"command_type": "start_har_capture", "params": {"captureSessionId": cs_id}},
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {"command_type": "inject_click_tracker", "params": {}},
-                timeout=10,
-            )
-            _http(
-                "POST",
-                "/browser-commands/execute",
-                {
-                    "command_type": "start_url_monitoring",
-                    "params": {
-                        "projectId": project_id,
-                        "processId": process_id,
-                        "captureSessionId": cs_id,
-                    },
-                },
-                timeout=10,
+                timeout=15,
             )
             har_started = True
         except Exception as exc:
-            print(_yellow(f"  Extension not responding — HAR capture not started: {exc}"))
+            print(_yellow(f"  Tabby HAR capture not started: {exc}"))
+    else:
+        try:
+            result = _http(
+                "POST",
+                "/browser-commands/execute",
+                {
+                    "command_type": "start_capture_session",
+                    "params": {
+                        "projectId": project_id,
+                        "processId": process_id,
+                        "captureSessionId": cs_id,
+                    },
+                },
+                timeout=10,
+            )
+            if isinstance(result, dict) and result.get("success") is False:
+                raise RuntimeError(result.get("error", "Extension command failed"))
+            har_started = True
+        except Exception:
+            try:
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "set_capture_state",
+                        "params": {
+                            "projectId": project_id,
+                            "processId": process_id,
+                            "captureSessionId": cs_id,
+                        },
+                    },
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {"command_type": "start_har_capture", "params": {"captureSessionId": cs_id}},
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {"command_type": "inject_click_tracker", "params": {}},
+                    timeout=10,
+                )
+                _http(
+                    "POST",
+                    "/browser-commands/execute",
+                    {
+                        "command_type": "start_url_monitoring",
+                        "params": {
+                            "projectId": project_id,
+                            "processId": process_id,
+                            "captureSessionId": cs_id,
+                        },
+                    },
+                    timeout=10,
+                )
+                har_started = True
+            except Exception as exc:
+                print(_yellow(f"  Extension not responding — HAR capture not started: {exc}"))
 
     print()
     print(_bold("Capture resumed:"))

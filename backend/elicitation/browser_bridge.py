@@ -14,6 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -25,7 +26,7 @@ COMMAND_TIMEOUT_SECONDS = 30
 # Tabby driver configuration
 # ---------------------------------------------------------------------------
 
-_agent_token_cache: dict[str, any] = {"token": "", "expires_at": 0.0}
+_agent_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
 
 def _use_tabby_driver() -> bool:

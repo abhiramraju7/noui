@@ -212,25 +212,24 @@ class TestOperationStructure:
 
 
 class TestCdpModeRender:
-    """CDP-mode invariants for _render_operation (now the default)."""
+    """Execute-fetch mode invariants for _render_operation (the default)."""
 
-    def test_imports_cdp_runtime(self) -> None:
+    def test_imports_execute_runtime(self) -> None:
         src = _render_cdp(_simple_tool(), auth_plan=_tabby_auth_plan())
-        assert "from noui_runtime.cdp import" in src
-        assert "cdp_fetch" in src
-        assert "find_page" in src
+        assert "from noui_runtime.execute import" in src
+        assert "execute_fetch" in src
 
     def test_no_httpx_or_resolve_auth(self) -> None:
         src = _render_cdp(_simple_tool(), auth_plan=_tabby_auth_plan())
         assert "import httpx" not in src
         assert "resolve_auth" not in src
 
-    def test_cdp_host_match_embedded(self) -> None:
-        """CDP_HOST_MATCH must come from the base_url's netloc so find_page finds the page."""
+    def test_profile_slug_embedded(self) -> None:
+        """PROFILE_SLUG must come from the auth_plan so execute_fetch can resolve the session."""
         src = _render_cdp(
             _simple_tool(base_url="https://api.myapp.com"), auth_plan=_tabby_auth_plan()
         )
-        assert "CDP_HOST_MATCH = 'api.myapp.com'" in src
+        assert "PROFILE_SLUG = 'example-bank'" in src
 
     def test_base_url_still_embedded(self) -> None:
         src = _render_cdp(
@@ -239,16 +238,11 @@ class TestCdpModeRender:
         assert "https://api.myapp.com" in src
 
     def test_recorded_headers_preserved(self) -> None:
-        """Recorded static headers must still be passed to cdp_fetch."""
+        """Recorded static headers must still be passed to execute_fetch."""
         tool = _simple_tool(request_headers=[{"name": "Accept", "value": "application/json"}])
         src = _render_cdp(tool, auth_plan={})
         assert "'Accept'" in src or '"Accept"' in src
         assert "'application/json'" in src or '"application/json"' in src
-
-    def test_raises_when_no_page_target(self) -> None:
-        src = _render_cdp(_simple_tool(), auth_plan=_tabby_auth_plan())
-        assert "No Tabby page matching" in src
-        assert "--execution-mode http" in src
 
     def test_query_params_url_encoded(self) -> None:
         tool = _simple_tool(
@@ -257,8 +251,8 @@ class TestCdpModeRender:
         src = _render_cdp(tool, auth_plan={})
         assert "urllib.parse.urlencode" in src
 
-    def test_unauth_still_generates_cdp(self) -> None:
-        """Even with no auth, CDP mode still generates in-browser execution."""
+    def test_unauth_still_generates_execute_fetch(self) -> None:
+        """Even with no auth, default mode still generates in-browser execution."""
         src = _render_cdp(_simple_tool(), auth_plan={})
-        assert "cdp_fetch" in src
-        assert "find_page" in src
+        assert "execute_fetch" in src
+        assert "PROFILE_SLUG" in src

@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.autopilot.models import AutopilotRecordingRun
 from backend.autopilot.schemas import AutopilotRunCreate, AutopilotRunOut
 from backend.database import get_db
-from backend.elicitation.browser_bridge import execute_command
+from backend.elicitation.browser_bridge import _use_tabby_driver, execute_command
 
 logger = logging.getLogger(__name__)
 
@@ -138,27 +138,32 @@ class CaptureControlIn(BaseModel):
 
 @router.post("/start-capture")
 async def start_capture(data: CaptureControlIn):
-    """Start HAR + click + URL capture via the extension.
+    """Start HAR + click + URL capture.
 
-    Sends the composite START_CAPTURE_SESSION message to the extension
-    through the browser command queue.
+    In Tabby mode: sends har_start to the worker via execute/browser.
+    In extension mode: verifies extension liveness and injects click tracker.
     """
+    if _use_tabby_driver():
+        result = await execute_command("har_start", {})
+        return {
+            "status": "started",
+            "capture_session_id": data.capture_session_id,
+            "driver": "tabby",
+            "note": "HAR capture started on the Tabby worker via execute/browser.",
+            "har_status": result.get("data", {}),
+        }
+
+    # Extension mode (original behavior)
     try:
-        # Get active tab
         page_info = await execute_command("get_page_info", {})
         tab_id = page_info.get("tabId")
     except TimeoutError:
         tab_id = None
 
-    # Use individual commands since START_CAPTURE_SESSION is a message handler,
-    # not a command handler.  We replicate its steps here.
     try:
-        # 1. Set capture state (so click events get tagged)
         await execute_command(
             "eval_js",
-            {
-                "code": "document.title"  # no-op to verify extension is alive
-            },
+            {"code": "document.title"},
         )
     except TimeoutError as exc:
         raise HTTPException(
@@ -166,11 +171,6 @@ async def start_capture(data: CaptureControlIn):
             "Extension not responding. Is Chrome running with the NoUI extension?",
         ) from exc
 
-    # The extension's SET_CAPTURE_STATE is a message handler, not a command handler.
-    # We can't call it through the command queue.  Instead, we set up capture
-    # by injecting the click tracker and starting HAR via command handlers.
-
-    # Inject click tracker
     if tab_id:
         try:
             await execute_command(
@@ -187,25 +187,53 @@ async def start_capture(data: CaptureControlIn):
                 },
             )
         except Exception:
-            pass  # click tracker injection is best-effort here
+            pass
 
     return {
         "status": "started",
         "capture_session_id": data.capture_session_id,
         "tab_id": tab_id,
+        "driver": "extension",
         "note": "HAR capture is managed by the extension capture session. Use the extension or call PUT /capture-sessions/{id}/start first.",
     }
 
 
 @router.post("/stop-capture")
 async def stop_capture(data: CaptureControlIn):
-    """Stop capture and trigger HAR upload.
+    """Stop capture and retrieve HAR.
 
-    The extension uploads the HAR when the capture session is stopped
-    via PUT /capture-sessions/{id}/stop.
+    In Tabby mode: sends har_stop to the worker, receives HAR JSON, and
+    stores it locally via the HAR storage path.
+    In extension mode: the extension uploads HAR when the capture session is stopped.
     """
+    if _use_tabby_driver():
+        result = await execute_command("har_stop", {})
+        result_data = result.get("data", {})
+        har_json = result_data.get("har")
+
+        # Store HAR locally if returned
+        if har_json:
+            import os
+            from pathlib import Path
+
+            data_dir = os.environ.get("NOUI_DATA_DIR", "data")
+            har_dir = Path(data_dir) / "har" / "autopilot"
+            har_dir.mkdir(parents=True, exist_ok=True)
+            har_path = har_dir / f"{data.capture_session_id}.har"
+            har_path.write_text(json.dumps(har_json, indent=2), encoding="utf-8")
+            logger.info("HAR saved to %s (%d entries)", har_path, result_data.get("entry_count", 0))
+
+        return {
+            "status": "stopped",
+            "capture_session_id": data.capture_session_id,
+            "driver": "tabby",
+            "entry_count": result_data.get("entry_count", 0),
+            "note": "HAR captured server-side by the Tabby worker.",
+        }
+
     return {
         "status": "stopped",
         "capture_session_id": data.capture_session_id,
+        "driver": "extension",
         "note": "Call PUT /capture-sessions/{id}/stop to finalize. The extension uploads HAR on stop.",
     }

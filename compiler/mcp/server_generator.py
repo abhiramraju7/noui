@@ -21,13 +21,12 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 from compiler.mcp.api_doc_generator import generate_api_markdown
 from compiler.mcp.auth_plan import generate_auth_plan
 from compiler.mcp.har_to_tools import har_to_tool_defs
 from compiler.runtime.auth_adapter import generate_auth_adapter
-from compiler.runtime.cdp_adapter import generate_cdp_adapter
+from compiler.runtime.execute_adapter import generate_execute_adapter
 
 _VALID_EXECUTION_MODES = ("cdp", "http")
 
@@ -136,7 +135,7 @@ def compile_workflow(
         generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
     )
     if execution_mode == "cdp":
-        (runtime_dir / "cdp.py").write_text(generate_cdp_adapter(), encoding="utf-8")
+        (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
 
     # ── 4. Write operations/*.py ──────────────────────────────────────────────
     ops_dir = out_path / "operations"
@@ -196,7 +195,7 @@ def compile_workflow(
         "API.md",
     ]
     if execution_mode == "cdp":
-        all_files.append("noui_runtime/cdp.py")
+        all_files.append("noui_runtime/execute.py")
     if auth_plan:
         all_files.append("auth_plan.json")
 
@@ -214,7 +213,7 @@ def compile_workflow(
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
     execution_strategy = (
-        "cdp_browser_session" if execution_mode == "cdp" else resolved_auth_strategy
+        "tabby_execute_fetch" if execution_mode == "cdp" else resolved_auth_strategy
     )
 
     manifest: dict = {
@@ -332,10 +331,11 @@ def _render_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp")
     """Render a single operation module.
 
     Two execution modes:
-      - "cdp" (default): the operation opens a WebSocket to Tabby's CDP endpoint
-        (localhost:9222), locates a page target for the recorded domain, and
-        fetches via Runtime.evaluate with `credentials: 'include'`. Cookies and
-        TLS fingerprint come from the real authenticated browser.
+      - "cdp" (default): the operation calls Tabby's POST /execute/fetch
+        endpoint, which runs fetch() inside the authenticated browser via
+        page.evaluate() with `credentials: 'include'`. Cookies and TLS
+        fingerprint come from the real authenticated browser. No WebSocket,
+        no direct CDP access.
       - "http" (legacy): the operation runs httpx in-process and resolves
         credentials via noui_runtime.auth.resolve_auth(). Strategy is driven by
         auth_plan["strategy"]:
@@ -345,12 +345,12 @@ def _render_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp")
         live auth headers so they are not dropped.
     """
     if execution_mode == "cdp":
-        return _render_operation_cdp(td)
+        return _render_operation_cdp(td, auth_plan=auth_plan)
     return _render_operation_http(td, auth_plan=auth_plan)
 
 
-def _render_operation_cdp(td: dict) -> str:
-    """Render an operation that executes inside Tabby's browser via CDP."""
+def _render_operation_cdp(td: dict, *, auth_plan: dict) -> str:
+    """Render an operation that executes inside Tabby's browser via execute/fetch."""
     name = td["name"]
     method = td["method"].upper()
     path_template = td["path"]
@@ -360,7 +360,7 @@ def _render_operation_cdp(td: dict) -> str:
     request_headers: list[dict] = td.get("request_headers", [])
     description = td.get("description", "")
 
-    netloc = urlparse(base_url).netloc if base_url else ""
+    profile_slug = auth_plan.get("profile_slug", "") if auth_plan else ""
 
     static_headers = {
         h["name"]: h["value"] for h in request_headers if h.get("name") and h.get("value")
@@ -375,8 +375,8 @@ def _render_operation_cdp(td: dict) -> str:
         f"Method: {method}",
         f"Path: {path_template}",
         "",
-        "Executes inside Tabby's authenticated browser via CDP. Requires a live",
-        f"Tabby session with a page open on {netloc or 'the target domain'}.",
+        "Executes inside Tabby's authenticated browser via the execute/fetch endpoint.",
+        "Requires a live Tabby session for the configured profile.",
         '"""',
         "",
         "from __future__ import annotations",
@@ -386,10 +386,10 @@ def _render_operation_cdp(td: dict) -> str:
         lines.append("import urllib.parse")
         lines.append("")
     lines += [
-        "from noui_runtime.cdp import cdp_fetch, find_page",
+        "from noui_runtime.execute import execute_fetch",
         "",
         f"BASE_URL = {base_url!r}",
-        f"CDP_HOST_MATCH = {netloc!r}",
+        f"PROFILE_SLUG = {profile_slug!r}",
         "",
         "",
     ]
@@ -422,21 +422,17 @@ def _render_operation_cdp(td: dict) -> str:
     if static_headers:
         lines.append(f"    headers = {static_headers!r}")
     else:
-        lines.append("    headers: dict[str, str] = {}")
+        lines.append("    headers: dict[str, str] | None = None")
 
-    lines.append("    ws_url = await find_page(CDP_HOST_MATCH)")
-    lines.append("    if not ws_url:")
-    lines.append(
-        "        raise RuntimeError("
-        'f"No Tabby page matching {CDP_HOST_MATCH!r}. '
-        "Open the site in Tabby (run `tabby session ensure --profile <slug>`) "
-        'or re-export with --execution-mode http.")'
-    )
-
-    call_kwargs: list[str] = ["ws_url", "url", f'method="{method}"', "headers=headers"]
+    call_kwargs: list[str] = [
+        "PROFILE_SLUG",
+        "url",
+        f'method="{method}"',
+        "headers=headers",
+    ]
     if has_body:
         call_kwargs.append("body=body")
-    lines.append(f"    return await cdp_fetch({', '.join(call_kwargs)})")
+    lines.append(f"    return await execute_fetch({', '.join(call_kwargs)})")
     lines.append("")
 
     return "\n".join(lines)

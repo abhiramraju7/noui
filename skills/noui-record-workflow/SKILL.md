@@ -35,19 +35,26 @@ The default is `--as both`. The rest of this skill focuses on the MCP output (au
 ## How Execution Works
 
 Generated operations run **inside Tabby's authenticated browser** by default.
-Each operation:
+Each operation calls the Tabby API's `POST /execute/fetch` endpoint, which
+routes to the worker pod and runs `fetch()` inside the real browser via
+Playwright's `page.evaluate()`:
 
-1. Opens a WebSocket to Tabby's CDP endpoint at `localhost:9222`.
-2. Finds the tab whose URL matches the recorded domain (via `find_page`).
-3. Calls `cdp_fetch(ws_url, url, method=..., headers=..., body=...)`, which
-   runs `fetch(url, {credentials: 'include'})` via `Runtime.evaluate` — so the
-   real browser's cookies, TLS fingerprint, and origin are used.
+1. The operation calls `execute_fetch(PROFILE_SLUG, url, method=..., headers=...)`.
+2. The adapter exchanges agent credentials for a bearer token, then POSTs to
+   `{TABBY_API_HOST}/execute/fetch` with the profile ID, URL, and parameters.
+3. The Tabby API resolves the profile to a healthy session, routes to the
+   worker pod, and the worker runs `fetch(url, {credentials: 'include'})`
+   inside the authenticated browser — so the real browser's cookies, TLS
+   fingerprint, and origin are used.
 
-The two primitives live in the generated `noui_runtime/cdp.py` module:
+The runtime adapter lives in the generated `noui_runtime/execute.py` module:
 
 ```python
-from noui_runtime.cdp import find_page, cdp_fetch
+from noui_runtime.execute import execute_fetch
 ```
+
+No WebSocket, no CDP port access, no `websockets` dependency — plain HTTP
+from the MCP process to the Tabby API.
 
 ### Why this is the default
 
@@ -58,16 +65,19 @@ from noui_runtime.cdp import find_page, cdp_fetch
   Python HTTP clients.
 - **Safer under session refresh.** Cookie rotation is handled by the browser;
   the MCP never sees a stale cookie.
+- **No CDP exposure.** The MCP process never connects to Chromium's debug
+  protocol. The Tabby API is the only entry point, with its own auth and
+  rate limiting.
 
 ### Runtime prerequisites
 
-- Tabby must be running with a live session for the app.
-- A page on the target domain must be open in that session. If not, the first
-  call raises a clear error naming `tabby session ensure --profile <slug>`.
+- Tabby must be running with a healthy session for the profile.
+- `TABBY_API_HOST`, `TABBY_CLIENT_ID`, and `TABBY_CLIENT_SECRET` must be set
+  (in `noui/.env` or environment). If not, the first call raises a clear error.
 
 ### Escape hatch — `--execution-mode http`
 
-Switch to the legacy Python-side path when CDP cannot work:
+Switch to the legacy Python-side path when the execute endpoint cannot work:
 
 ```bash
 .venv/bin/python cli/main.py workflow export <session_id> --execution-mode http
@@ -77,7 +87,8 @@ Use `http` mode when:
 
 - The API is server-to-server and not reachable from the browser origin.
 - CORS blocks `credentials: 'include'` cross-origin (no
-  `Access-Control-Allow-Credentials: true`).
+  `Access-Control-Allow-Credentials: true`). The error manifests as a network
+  error, not an HTTP 403.
 - You are running the MCP on a host without a live Tabby.
 
 Under `--execution-mode http` the generator emits the classic
@@ -224,7 +235,8 @@ workbench/mcp_servers/<app_slug>/<server_id>/
 ├── API.md               # Human-readable API reference (auto-generated)
 ├── auth_plan.json       # Auth strategy + fallback recipes (Path A/B only; never stores secrets)
 ├── noui_runtime/
-│   └── auth.py          # Runtime auth adapter (2-step Tabby flow or static env var)
+│   ├── auth.py          # Runtime auth adapter (2-step Tabby flow or static env var)
+│   └── execute.py       # Execute adapter (calls Tabby's POST /execute/fetch)
 └── operations/
     └── <tool_name>.py   # One file per generated tool
 ```

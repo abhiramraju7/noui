@@ -102,8 +102,15 @@ def _find_property_array(data: Any, depth: int = 0) -> list[dict] | None:
             return [_normalize_property(item) for item in data[:25]]
 
     if isinstance(data, dict):
-        for key in ("properties", "propertySearchListings", "listings",
-                     "results", "searchResults", "hotels", "items"):
+        for key in (
+            "properties",
+            "propertySearchListings",
+            "listings",
+            "results",
+            "searchResults",
+            "hotels",
+            "items",
+        ):
             if key in data:
                 found = _find_property_array(data[key], depth + 1)
                 if found:
@@ -125,12 +132,10 @@ def _looks_like_property(item: Any) -> bool:
         return False
     keys = set(item.keys())
     has_name = bool(keys & _PROPERTY_SIGNALS) or any(
-        isinstance(v, dict) and set(v.keys()) & _PROPERTY_SIGNALS
-        for v in item.values()
+        isinstance(v, dict) and set(v.keys()) & _PROPERTY_SIGNALS for v in item.values()
     )
     has_price = bool(keys & _PRICE_SIGNALS) or any(
-        isinstance(v, dict) and set(v.keys()) & _PRICE_SIGNALS
-        for v in item.values()
+        isinstance(v, dict) and set(v.keys()) & _PRICE_SIGNALS for v in item.values()
     )
     return has_name and has_price
 
@@ -151,49 +156,91 @@ def _deep_get(d: dict, *paths: str) -> Any:
 
 
 def _normalize_property(item: dict) -> dict:
-    name = _deep_get(
-        item, "name", "propertyName", "hotelName", "title",
-        "header.headline", "cardHeader.headline",
-    ) or ""
+    name = (
+        _deep_get(
+            item,
+            "name",
+            "propertyName",
+            "hotelName",
+            "title",
+            "header.headline",
+            "cardHeader.headline",
+        )
+        or ""
+    )
 
-    nightly = _deep_get(
-        item, "price.lead.formatted", "price.displayPrice",
-        "ratePlan.price.current", "price.options.0.formattedDisplayPrice",
-        "mapMarker.label",
-    ) or ""
-    total = _deep_get(
-        item, "price.strikeOut.formatted", "price.displayTotalPrice",
-        "ratePlan.price.total", "price.total.formatted",
-    ) or ""
+    nightly = (
+        _deep_get(
+            item,
+            "price.lead.formatted",
+            "price.displayPrice",
+            "ratePlan.price.current",
+            "price.options.0.formattedDisplayPrice",
+            "mapMarker.label",
+        )
+        or ""
+    )
+    total = (
+        _deep_get(
+            item,
+            "price.strikeOut.formatted",
+            "price.displayTotalPrice",
+            "ratePlan.price.total",
+            "price.total.formatted",
+        )
+        or ""
+    )
 
     rating = _deep_get(
-        item, "reviews.score", "guestReviews.rating",
-        "star", "starRating", "reviews.overallScore",
+        item,
+        "reviews.score",
+        "guestReviews.rating",
+        "star",
+        "starRating",
+        "reviews.overallScore",
     )
     rating_str = f"{rating}/10" if rating else ""
 
-    rating_label = _deep_get(
-        item, "reviews.qualitativeScoreText", "guestReviews.qualitativeScoreText",
-        "reviews.qualitative",
-    ) or ""
+    rating_label = (
+        _deep_get(
+            item,
+            "reviews.qualitativeScoreText",
+            "guestReviews.qualitativeScoreText",
+            "reviews.qualitative",
+        )
+        or ""
+    )
 
     reviews_count = _deep_get(
-        item, "reviews.total", "guestReviews.total",
-        "reviews.count", "reviews.totalCount",
+        item,
+        "reviews.total",
+        "guestReviews.total",
+        "reviews.count",
+        "reviews.totalCount",
     )
     reviews_str = str(reviews_count) if reviews_count else ""
 
-    url = _deep_get(
-        item, "propertyUrl", "url", "deeplink",
-        "cardLink.resource.value",
-    ) or ""
+    url = (
+        _deep_get(
+            item,
+            "propertyUrl",
+            "url",
+            "deeplink",
+            "cardLink.resource.value",
+        )
+        or ""
+    )
     if url and not url.startswith("http"):
         url = f"https://www.expedia.com{url}"
 
-    refundable = bool(_deep_get(
-        item, "freeCancellation", "price.freeCancellation",
-        "offerBadge.secondary",
-    ))
+    refundable = bool(
+        _deep_get(
+            item,
+            "freeCancellation",
+            "price.freeCancellation",
+            "offerBadge.secondary",
+        )
+    )
 
     return {
         "name": str(name),
@@ -208,10 +255,20 @@ def _normalize_property(item: dict) -> dict:
 
 
 _FILTER_HEADINGS = {
-    "total price", "popular filters", "star rating", "guest rating",
-    "property amenities", "room amenities", "room views", "payment type",
-    "property cancellation options", "property type", "property brand",
-    "meal plans available", "traveler experience", "from",
+    "total price",
+    "popular filters",
+    "star rating",
+    "guest rating",
+    "property amenities",
+    "room amenities",
+    "room views",
+    "payment type",
+    "property cancellation options",
+    "property type",
+    "property brand",
+    "meal plans available",
+    "traveler experience",
+    "from",
 }
 
 
@@ -229,22 +286,24 @@ def _extract_listings_from_summary(summary: dict) -> list[dict]:
             continue
         for prefix in ("Opens ", "More information about "):
             if text.startswith(prefix):
-                text = text[len(prefix):]
+                text = text[len(prefix) :]
                 break
         for suffix in (", opens in a new tab", " in new tab"):
             if text.endswith(suffix):
-                text = text[:-len(suffix)]
+                text = text[: -len(suffix)]
                 break
-        listings.append({
-            "name": text,
-            "price_per_night": "",
-            "price_total": "",
-            "rating": "",
-            "rating_label": "",
-            "reviews_count": "",
-            "refundable": False,
-            "url": href,
-        })
+        listings.append(
+            {
+                "name": text,
+                "price_per_night": "",
+                "price_total": "",
+                "rating": "",
+                "rating_label": "",
+                "reviews_count": "",
+                "refundable": False,
+                "url": href,
+            }
+        )
     return listings[:25]
 
 
@@ -272,9 +331,7 @@ async def _search_properties(
 
     await execute_browser(profile_id, "har_start")
 
-    await execute_browser(
-        profile_id, "navigate", {"url": search_url}, timeout_ms=60_000
-    )
+    await execute_browser(profile_id, "navigate", {"url": search_url}, timeout_ms=60_000)
 
     try:
         await execute_browser(
@@ -306,11 +363,7 @@ async def execute(
     profile_slug: str | None = None,
 ) -> dict:
     """Search for hotels on Expedia using the Tabby execute endpoints."""
-    profile_id = (
-        profile_slug
-        or os.environ.get("PROFILE_SLUG")
-        or "expedia"
-    )
+    profile_id = profile_slug or os.environ.get("PROFILE_SLUG") or "expedia"
 
     dest_info = await _resolve_destination(profile_id, destination)
     region_id = dest_info.get("region_id", "")

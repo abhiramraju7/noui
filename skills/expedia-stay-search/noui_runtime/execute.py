@@ -124,9 +124,7 @@ async def execute_fetch(
             "Run `tabby session ensure --profile <slug>` or check the admin UI."
         )
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"Tabby execute/fetch failed ({resp.status_code}): {resp.text[:500]}"
-        )
+        raise RuntimeError(f"Tabby execute/fetch failed ({resp.status_code}): {resp.text[:500]}")
 
     data = resp.json()
     status = data.get("status", 0)
@@ -175,9 +173,7 @@ async def execute_browser(
             "Run `tabby session ensure --profile <slug>` or check the admin UI."
         )
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"Tabby execute/browser failed ({resp.status_code}): {resp.text[:500]}"
-        )
+        raise RuntimeError(f"Tabby execute/browser failed ({resp.status_code}): {resp.text[:500]}")
 
     data = resp.json()
     if not data.get("success", False):

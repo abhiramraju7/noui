@@ -207,28 +207,44 @@ def _normalize_property(item: dict) -> dict:
     }
 
 
-def _extract_listings_from_summary(summary: dict) -> list[dict]:
-    """Fallback: extract hotel names from get_page_summary headings."""
-    listings = []
-    headings = summary.get("headings", [])
-    links = {l.get("text", "").strip(): l.get("href", "") for l in summary.get("links", [])}
+_FILTER_HEADINGS = {
+    "total price", "popular filters", "star rating", "guest rating",
+    "property amenities", "room amenities", "room views", "payment type",
+    "property cancellation options", "property type", "property brand",
+    "meal plans available", "traveler experience", "from",
+}
 
-    for h in headings:
-        text = (h.get("text") or "").strip()
-        if not text or text.startswith("Photo gallery"):
+
+def _extract_listings_from_summary(summary: dict) -> list[dict]:
+    """Fallback: extract hotel names from get_page_summary links."""
+    listings = []
+    for link in summary.get("links", []):
+        text = (link.get("text") or "").strip()
+        href = link.get("href", "")
+        if not text or not href:
             continue
-        url = links.get(text, "")
-        if url or h.get("level") == "H3":
-            listings.append({
-                "name": text,
-                "price_per_night": "",
-                "price_total": "",
-                "rating": "",
-                "rating_label": "",
-                "reviews_count": "",
-                "refundable": False,
-                "url": url,
-            })
+        if "Hotel-Information" not in href and "hotel-deals" not in href.lower():
+            continue
+        if text.startswith("Photo gallery") or text.lower() in _FILTER_HEADINGS:
+            continue
+        for prefix in ("Opens ", "More information about "):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        for suffix in (", opens in a new tab", " in new tab"):
+            if text.endswith(suffix):
+                text = text[:-len(suffix)]
+                break
+        listings.append({
+            "name": text,
+            "price_per_night": "",
+            "price_total": "",
+            "rating": "",
+            "rating_label": "",
+            "reviews_count": "",
+            "refundable": False,
+            "url": href,
+        })
     return listings[:25]
 
 
@@ -257,7 +273,7 @@ async def _search_properties(
     await execute_browser(profile_id, "har_start")
 
     await execute_browser(
-        profile_id, "navigate", {"url": search_url}, timeout_ms=45_000
+        profile_id, "navigate", {"url": search_url}, timeout_ms=60_000
     )
 
     try:

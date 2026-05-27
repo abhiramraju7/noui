@@ -7,15 +7,16 @@ description: Use this skill when the user wants to search for hotels on Expedia 
 
 Search Expedia for available hotels by destination and dates using an authenticated Tabby browser session. Returns a Hotel-Search URL and extracted listings (name, nightly price, total price, rating, reviews, refundable flag, link).
 
-This skill drives the real Expedia site inside a Tabby-managed browser via the `execute/fetch` endpoint instead of a Python HTTP client. That is intentional: Expedia sits behind Akamai, which blocks non-browser TLS fingerprints. Do not try to port the operations to `httpx` or `requests` — you will get 429 Too Many Requests.
+This skill uses Tabby's `POST /execute/fetch` and `POST /execute/browser` endpoints to drive the real Expedia site inside a Tabby-managed browser. That is intentional: Expedia sits behind Akamai, which blocks non-browser TLS fingerprints. Do not try to port the operations to `httpx` or `requests` — you will get 429 Too Many Requests.
 
 ## Prerequisites
 
 Before invoking any operation:
 
 1. **Tabby is running with the `expedia` profile.** Verify with `.venv/bin/python cli/main.py tabby session ensure --profile expedia` from the `noui/` directory. If that command fails, the user needs to re-run `/noui-record-login` for the `expedia` profile first — do not try to proceed without a live session.
-2. **`PROFILE_SLUG=expedia` is exported** in the shell that runs the operation. This is the slug, not the DB UUID. The runtime reads it (or the `--profile-slug` flag) to fetch live credentials from Tabby.
-3. **The Expedia profile is ACTIVE.** Check with the Tabby admin endpoint if in doubt — a STAGING profile returns empty credentials and the operation fails with "Tabby returned empty credentials for profile 'expedia'".
+2. **`PROFILE_SLUG=expedia` is exported** in the shell that runs the operation. This is the slug, not the DB UUID. The runtime reads it (or the `--profile-slug` flag) to identify the Tabby session.
+3. **Agent credentials are configured.** `TABBY_CLIENT_ID` and `TABBY_CLIENT_SECRET` must be set in the environment or `.env` file. These are used to obtain a bearer token for the Tabby API.
+4. **The Expedia profile is ACTIVE.** Check with the Tabby admin endpoint if in doubt — a STAGING profile returns 409 from the execute endpoints.
 
 ## Operations
 
@@ -79,12 +80,14 @@ Prints a JSON object to stdout on success. Exits non-zero on failure with a diag
 ## Troubleshooting
 
 - **`No healthy Tabby session for profile "expedia"`** — no healthy session found. Run `tabby session ensure --profile expedia` and retry.
-- **`Expedia API returned 429: ...`** — Akamai is rate-limiting even through the browser. This is rare via the execute endpoint; if it happens repeatedly the Tabby session may need to rotate IPs or the profile needs re-recording.
-- **Empty `listings`, non-zero `listings_count`** — Expedia changed its DOM. The DOM-scrape selectors in `search_hotels.py` (`[data-stid="lodging-card-responsive"]`) need updating. Report to the NoUI maintainers; do not guess at selectors.
-- **`auth_plan.json missing profile_slug`** — this skill was mis-installed. The `auth_plan.json` file sitting next to `noui_runtime/` must have `profile_slug: "expedia"`. Reinstall the skill.
+- **`Tabby execute/fetch failed (429)`** — Akamai is rate-limiting even through the browser. This is rare via the execute endpoint; if it happens repeatedly the Tabby session may need to rotate IPs or the profile needs re-recording.
+- **Empty `listings`** — HAR capture did not find structured search results in the API responses, and the page summary fallback found no hotel headings. Expedia may have changed its API response shape. Check the HAR entries manually.
+- **`TABBY_CLIENT_ID and TABBY_CLIENT_SECRET must be set`** — agent credentials are missing. Create an agent client in the Tabby admin UI and set the env vars.
 
 ## Notes
 
-- This skill performs **DOM scraping** after navigation, not pure API calls. Results reflect what Expedia renders to a logged-in user, which may include personalized pricing.
-- There is a ~7-second wait for the SPA to render results; a single invocation can take 10–15 seconds end-to-end.
-- This skill is the reference sample for the NoUI skills-generation pipeline. Generated skills from real recordings will share the same layout (`SKILL.md`, `operations/`, `noui_runtime/auth.py`, `manifest.json`, `auth_plan.json`) but will vary in operation count and complexity.
+- This skill uses **HAR capture** during page navigation to intercept Expedia's API responses, then extracts hotel listings from the structured JSON data. Falls back to `get_page_summary` heading extraction if no structured API response is found.
+- The `execute/fetch` endpoint runs `fetch()` inside the real browser — cookies and TLS fingerprint are preserved automatically.
+- The `execute/browser` endpoint runs Playwright commands on the session page — no direct CDP WebSocket connection needed.
+- A single invocation can take 10–20 seconds (typeahead + navigation + SPA render).
+- This skill is the reference sample for the NoUI skills-generation pipeline. Generated skills from real recordings will share the same layout (`SKILL.md`, `operations/`, `noui_runtime/`, `manifest.json`, `auth_plan.json`) but will vary in operation count and complexity.

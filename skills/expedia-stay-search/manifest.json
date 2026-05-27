@@ -14,13 +14,14 @@
     "requires_auth": true,
     "profile_slug": "expedia",
     "profile_db_id": "c2555a7e-7eb1-4945-bf8d-f5727c897831",
-    "strategy": "tabby_credentials",
+    "strategy": "tabby_execute",
     "auth_plan_file": "auth_plan.json"
   },
   "runtime": {
     "type": "claude-code-skill",
     "entrypoint": "SKILL.md",
     "operation_style": "subprocess-cli",
+    "transport": "execute",
     "python": ">=3.11"
   },
   "operations": [
@@ -34,7 +35,8 @@
         {"name": "check_in", "type": "string", "required": true},
         {"name": "check_out", "type": "string", "required": true},
         {"name": "guests", "type": "integer", "required": false, "default": 2},
-        {"name": "rooms", "type": "integer", "required": false, "default": 1}
+        {"name": "rooms", "type": "integer", "required": false, "default": 1},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "expedia"}
       ]
     }
   ],
@@ -46,6 +48,7 @@
       "auth_plan.json",
       "API.md",
       "operations/search_hotels.py",
+      "noui_runtime/execute.py",
       "noui_runtime/auth.py",
       "noui_runtime/__init__.py",
       "operations/__init__.py"

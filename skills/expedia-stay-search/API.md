@@ -10,17 +10,17 @@
 
 | Operation | Transport | Path | Auth |
 |---|---|---|---|
-| `search_hotels` | CDP + DOM scrape | `/Hotel-Search` | cookies: `EG_SESSIONTOKEN` |
+| `search_hotels` | execute/fetch + execute/browser (HAR) | `/Hotel-Search` | agent token + browser session cookies |
 
 ## `search_hotels`
 
-Search Expedia for hotels in a destination, on given check-in / check-out dates, for a given number of guests and rooms. Returns up to 25 listings extracted from the first page of rendered results.
+Search Expedia for hotels in a destination, on given check-in / check-out dates, for a given number of guests and rooms. Returns up to 25 listings extracted from the first page of results.
 
-- **Transport:** CDP (connects to `localhost:9222`) — bypasses Akamai TLS fingerprint checks.
+- **Transport:** Tabby `POST /execute/fetch` (typeahead) + `POST /execute/browser` (navigate, HAR capture) — bypasses Akamai TLS fingerprint checks via the real browser session.
 - **Base URL:** `https://www.expedia.com`
 - **Path:** `/Hotel-Search`
 - **Recorded response status:** `200`
-- **Auth:** Tabby-provisioned session cookies (`EG_SESSIONTOKEN`, `JSESSION`, etc.) via the `expedia` profile.
+- **Auth:** Agent bearer token (`TABBY_CLIENT_ID` / `TABBY_CLIENT_SECRET` → `/auth/agent-token`). Browser session cookies are injected automatically by the execute endpoints.
 
 ### Parameters
 
@@ -31,6 +31,7 @@ Search Expedia for hotels in a destination, on given check-in / check-out dates,
 | `check_out` | string | yes | query | Check-out date in `YYYY-MM-DD` format. |
 | `guests` | integer | no | query | Number of adult guests (default: `2`). |
 | `rooms` | integer | no | query | Number of rooms (default: `1`). |
+| `profile_slug` | string | no | env/flag | Tabby profile slug (default: `$PROFILE_SLUG` or `expedia`). |
 
 ### CLI Invocation
 
@@ -45,15 +46,18 @@ python operations/search_hotels.py \
 
 ### Runtime Behavior
 
-1. Connects to Tabby's CDP endpoint and finds an open Expedia browser tab.
-2. Resolves the destination string to a `regionId` via `/api/v4/typeahead/<query>`.
-3. Navigates the browser tab to `/Hotel-Search?...` with resolved params.
-4. Waits 7 seconds for the SPA to render.
-5. Evaluates a JS extractor in the page to scrape up to 25 listings from the rendered DOM.
-6. Returns `{search_url, destination, region_id, check_in, check_out, guests, rooms, listings_count, listings}`.
+1. Obtains an agent bearer token via `POST /auth/agent-token` (client credentials exchange).
+2. Resolves the destination string to a `regionId` via `POST /execute/fetch` → `GET /api/v4/typeahead/<query>` (fetch runs inside the browser session).
+3. Starts HAR capture via `POST /execute/browser` → `har_start`.
+4. Navigates the browser to `/Hotel-Search?...` via `POST /execute/browser` → `navigate`.
+5. Waits for `[data-stid="lodging-card-responsive"]` to appear via `POST /execute/browser` → `wait_for_selector`.
+6. Stops HAR capture and retrieves all captured network entries via `POST /execute/browser` → `har_stop`.
+7. Parses captured API responses to extract hotel listings (name, price, rating, reviews, URL).
+8. Falls back to `get_page_summary` heading extraction if no structured API response is found in the HAR.
+9. Returns `{search_url, destination, region_id, check_in, check_out, guests, rooms, listings_count, listings}`.
 
 ### Static Request Notes
 
 - Query parameters: `destination`, `regionId`, `d1`/`startDate`, `d2`/`endDate`, `adults`, `rooms`, `sort=RECOMMENDED`
 - Body parameters: none
-- Static request headers: none (cookies attached by the browser automatically)
+- Request headers: `Authorization: Bearer <agent_token>` (to Tabby API only; browser cookies are injected by the execute endpoints)

@@ -4409,6 +4409,12 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
 
     env = {**os.environ}
     env.update(_load_env_local())
+    # Local workers must expose /execute/* so WDL `via:"tabby"` routing and
+    # autopilot browser commands work. The worker registers those routes only
+    # when EXECUTE_ENABLED=true (in K8s the controller derives this from the
+    # app's execute_enabled). Default it on for local dev; an explicit value
+    # from the environment or .env.local still wins.
+    env.setdefault("EXECUTE_ENABLED", "true")
     env.update(
         {
             "SESSION_ID": session_id,

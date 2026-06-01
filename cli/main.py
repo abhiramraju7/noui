@@ -574,6 +574,38 @@ def _tabby_http(
         ) from exc
 
 
+def _post_json_to(
+    url: str,
+    body: dict[str, Any],
+    token: str | None = None,
+    timeout: int = 15,
+) -> dict[str, Any] | list[Any]:
+    """POST JSON to an absolute URL.
+
+    Unlike :func:`_tabby_http` (which targets ``TABBY_API_HOST``), this hits an
+    arbitrary host — used by ``tabby setup --cloud`` to reach the Adopt platform
+    and a cloud Tabby that are not the locally-configured host.
+    """
+    data = json.dumps(body).encode()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from POST {url}: {body_text}") from exc
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            detail = f"timed out after {timeout}s"
+        else:
+            detail = str(reason) or type(reason).__name__
+        raise RuntimeError(f"Cannot reach {url} ({detail}).") from exc
+
+
 def _is_tabby_mode() -> bool:
     """True when all three Tabby env vars are set (headless browser driver)."""
     return bool(
@@ -4051,8 +4083,96 @@ def cmd_tabby_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
+    """Configure NoUI for Tabby Cloud via the platform-JWT token-exchange flow.
+
+    Unlike local setup, this provisions no Tabby agent client and needs no Tabby
+    admin token: NoUI authenticates with platform (Adopt) client credentials,
+    exchanges them for a platform JWT, and lets Tabby's /auth/token-exchange mint
+    a Tabby JWT. We verify that round-trip end-to-end, then persist the env vars.
+    """
+    adopt_api_url = (args.adopt_api_url or os.environ.get("ADOPT_API_URL", "")).rstrip("/")
+    adopt_client_id = args.adopt_client_id or os.environ.get("ADOPT_CLIENT_ID", "")
+    adopt_client_secret = args.adopt_client_secret or os.environ.get("ADOPT_CLIENT_SECRET", "")
+    tabby_url = (
+        args.tabby_url
+        or os.environ.get("TABBY_API_URL", "")
+        or os.environ.get("TABBY_API_HOST", "")
+    ).rstrip("/")
+
+    missing = [
+        name
+        for name, val in (
+            ("ADOPT_API_URL", adopt_api_url),
+            ("ADOPT_CLIENT_ID", adopt_client_id),
+            ("ADOPT_CLIENT_SECRET", adopt_client_secret),
+            ("TABBY_API_URL", tabby_url),
+        )
+        if not val
+    ]
+    if missing:
+        print(_red(f"Missing required cloud settings: {', '.join(missing)}"))
+        print("  Provide them via flags (--adopt-api-url, --adopt-client-id,")
+        print("  --adopt-client-secret, --tabby-url) or the matching environment variables.")
+        return 1
+
+    print(f"Verifying platform credentials at {_cyan(adopt_api_url)} …", end=" ", flush=True)
+    try:
+        token_resp = _post_json_to(
+            f"{adopt_api_url}/v1/users/api-token",
+            {"client_id": adopt_client_id, "secret": adopt_client_secret},
+        )
+        assert isinstance(token_resp, dict)
+        platform_jwt = token_resp.get("access_token", "")
+        if not platform_jwt:
+            raise RuntimeError(f"no access_token in /v1/users/api-token response: {token_resp}")
+        print(_green("✓"))
+    except (RuntimeError, AssertionError) as exc:
+        print()
+        print(_red(f"Platform token request failed: {exc}"))
+        return 1
+
+    print(f"Exchanging for a Tabby token at {_cyan(tabby_url)} …", end=" ", flush=True)
+    try:
+        exch = _post_json_to(
+            f"{tabby_url}/auth/token-exchange",
+            {"subject_token": platform_jwt, "subject_token_type": "oidc_jwt"},
+        )
+        assert isinstance(exch, dict)
+        tabby_jwt = exch.get("access_token", "")
+        if not tabby_jwt:
+            raise RuntimeError(f"no access_token in /auth/token-exchange response: {exch}")
+        print(_green("✓"))
+    except (RuntimeError, AssertionError) as exc:
+        print()
+        print(_red(f"Tabby token-exchange failed: {exc}"))
+        print("  Confirm the platform issuer is registered as an IdP in this Tabby instance.")
+        return 1
+
+    env_file = Path(args.env_file) if args.env_file else NOUI_DIR / ".env"
+    _write_env_vars(
+        env_file,
+        {
+            "TABBY_API_URL": tabby_url,
+            "ADOPT_API_URL": adopt_api_url,
+            "ADOPT_CLIENT_ID": adopt_client_id,
+            "ADOPT_CLIENT_SECRET": adopt_client_secret,
+            "NOUI_TABBY_AUTH_MODE": "platform_jwt",
+        },
+    )
+
+    print()
+    print(_green("✓ Cloud setup complete!"))
+    print(f"  Settings written to: {_cyan(str(env_file))}")
+    print("  Generated MCP servers/skills will authenticate via platform token-exchange.")
+    return 0
+
+
 def cmd_tabby_setup(args: argparse.Namespace) -> int:
     """Full end-to-end Tabby provisioning for NoUI."""
+    if getattr(args, "cloud", False):
+        return _cmd_tabby_setup_cloud(args)
+
     build_state, detail = _tabby_worker_build_state()
     if build_state in ("missing", "stale"):
         print(_red(f"Tabby worker is not ready: {detail}"))
@@ -4934,6 +5054,38 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default=None,
         help="Path to write TABBY_* vars into (default: noui/.env)",
+    )
+    tabby_setup_p.add_argument(
+        "--cloud",
+        action="store_true",
+        help=(
+            "Configure for Tabby Cloud via platform token-exchange (no local "
+            "Tabby/admin token); uses ADOPT_API_URL/ADOPT_CLIENT_ID/ADOPT_CLIENT_SECRET"
+        ),
+    )
+    tabby_setup_p.add_argument(
+        "--adopt-api-url",
+        metavar="URL",
+        default=None,
+        help="Adopt platform base URL for --cloud (default: $ADOPT_API_URL)",
+    )
+    tabby_setup_p.add_argument(
+        "--adopt-client-id",
+        metavar="ID",
+        default=None,
+        help="Adopt platform client_id for --cloud (default: $ADOPT_CLIENT_ID)",
+    )
+    tabby_setup_p.add_argument(
+        "--adopt-client-secret",
+        metavar="SECRET",
+        default=None,
+        help="Adopt platform client_secret for --cloud (default: $ADOPT_CLIENT_SECRET)",
+    )
+    tabby_setup_p.add_argument(
+        "--tabby-url",
+        metavar="URL",
+        default=None,
+        help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL / $TABBY_API_HOST)",
     )
 
     tabby_session_p = tabby_sub.add_parser("session", help="Manage browser sessions")

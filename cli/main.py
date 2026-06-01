@@ -609,7 +609,7 @@ def _post_json_to(
 def _is_tabby_mode() -> bool:
     """True when all three Tabby env vars are set (headless browser driver)."""
     return bool(
-        os.environ.get("TABBY_API_HOST")
+        os.environ.get("TABBY_API_URL")
         and os.environ.get("TABBY_CLIENT_ID")
         and os.environ.get("TABBY_PROFILE_ID")
     )
@@ -4094,11 +4094,7 @@ def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
     adopt_api_url = (args.adopt_api_url or os.environ.get("ADOPT_API_URL", "")).rstrip("/")
     adopt_client_id = args.adopt_client_id or os.environ.get("ADOPT_CLIENT_ID", "")
     adopt_client_secret = args.adopt_client_secret or os.environ.get("ADOPT_CLIENT_SECRET", "")
-    tabby_url = (
-        args.tabby_url
-        or os.environ.get("TABBY_API_URL", "")
-        or os.environ.get("TABBY_API_HOST", "")
-    ).rstrip("/")
+    tabby_url = (args.tabby_url or os.environ.get("TABBY_API_URL", "")).rstrip("/")
 
     missing = [
         name
@@ -5085,7 +5081,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tabby-url",
         metavar="URL",
         default=None,
-        help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL / $TABBY_API_HOST)",
+        help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL)",
     )
 
     tabby_session_p = tabby_sub.add_parser("session", help="Manage browser sessions")

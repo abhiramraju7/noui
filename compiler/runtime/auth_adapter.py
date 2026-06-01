@@ -28,8 +28,8 @@ def generate_auth_adapter(tabby_api_host: str) -> str:
       - "static_secret_header" : read secret from env var, construct header
 
     Args:
-        tabby_api_host: Default Tabby API host URL baked in as a fallback
-            (overridable via TABBY_API_HOST / TABBY_API_URL env var).
+        tabby_api_host: Default Tabby API base URL baked in as a fallback
+            (overridable via the TABBY_API_URL env var).
 
     Returns:
         Python source code string for noui_runtime/auth.py.
@@ -83,9 +83,7 @@ _env_file = _find_env_file()
 if _env_file is not None:
     load_dotenv(_env_file)
 
-TABBY_API_HOST = os.environ.get(
-    "TABBY_API_URL", os.environ.get("TABBY_API_HOST", "{tabby_api_host}")
-)
+TABBY_API_HOST = os.environ.get("TABBY_API_URL", "{tabby_api_host}")
 TABBY_CLIENT_ID = os.environ.get("TABBY_CLIENT_ID", "")
 TABBY_CLIENT_SECRET = os.environ.get("TABBY_CLIENT_SECRET", "")
 

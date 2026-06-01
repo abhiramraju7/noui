@@ -3,7 +3,7 @@
 Commands are created by MCP tool handlers and consumed by the Chrome extension
 via polling. Results flow back through asyncio.Event synchronization.
 
-When TABBY_API_HOST, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set, commands
+When TABBY_API_URL, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set, commands
 are routed to Tabby's POST /execute/browser endpoint instead — no extension needed.
 """
 
@@ -31,7 +31,7 @@ _agent_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
 def _use_tabby_driver() -> bool:
     return bool(
-        os.environ.get("TABBY_API_HOST")
+        os.environ.get("TABBY_API_URL")
         and os.environ.get("TABBY_CLIENT_ID")
         and os.environ.get("TABBY_PROFILE_ID")
     )
@@ -43,7 +43,7 @@ async def _get_agent_token() -> str:
     if _agent_token_cache["token"] and _agent_token_cache["expires_at"] > now + 30:
         return _agent_token_cache["token"]
 
-    api_host = os.environ["TABBY_API_HOST"].rstrip("/")
+    api_host = os.environ["TABBY_API_URL"].rstrip("/")
     client_id = os.environ["TABBY_CLIENT_ID"]
     client_secret = os.environ["TABBY_CLIENT_SECRET"]
 
@@ -76,7 +76,7 @@ async def _execute_command_via_tabby(command_type: str, params: dict) -> dict:
 
     Returns the same {success, data, error} shape as the extension driver.
     """
-    api_host = os.environ["TABBY_API_HOST"].rstrip("/")
+    api_host = os.environ["TABBY_API_URL"].rstrip("/")
     profile_id = os.environ["TABBY_PROFILE_ID"]
     token = await _get_agent_token()
 
@@ -187,7 +187,7 @@ async def _execute_command_via_extension(command_type: str, params: dict) -> dic
 async def execute_command(command_type: str, params: dict) -> dict:
     """Execute a browser command, routing to Tabby or the extension.
 
-    When TABBY_API_HOST, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set,
+    When TABBY_API_URL, TABBY_CLIENT_ID, and TABBY_PROFILE_ID are set,
     commands go to Tabby's POST /execute/browser. Otherwise, they go to
     the Chrome extension via the in-memory queue.
 

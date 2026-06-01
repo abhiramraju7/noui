@@ -142,9 +142,9 @@ class TestTabbyApiHostConfig:
 
     def test_env_var_override(self) -> None:
         src = _generated()
-        # Must prefer TABBY_API_URL or TABBY_API_HOST env vars
-        assert "TABBY_API_URL" in src or "TABBY_API_HOST" in src, (
-            "Generated auth.py must allow overriding TABBY_API_HOST via environment"
+        # Must read the single TABBY_API_URL env var
+        assert "TABBY_API_URL" in src, (
+            "Generated auth.py must allow overriding the Tabby base URL via TABBY_API_URL"
         )
 
 

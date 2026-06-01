@@ -49,8 +49,10 @@ Shared across MCP-server and Skill output formats. Locates `.env` via:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -87,6 +89,26 @@ TABBY_API_HOST = os.environ.get(
 TABBY_CLIENT_ID = os.environ.get("TABBY_CLIENT_ID", "")
 TABBY_CLIENT_SECRET = os.environ.get("TABBY_CLIENT_SECRET", "")
 
+# Platform (Adopt) credentials for the cloud token-exchange flow. When these are
+# present (or NOUI_TABBY_AUTH_MODE=platform_jwt), the runtime exchanges platform
+# client credentials for a platform JWT, then exchanges that JWT for a Tabby JWT
+# via Tabby's /auth/token-exchange. Otherwise it uses the local/self-host flow:
+# Tabby agent-client credentials via /auth/agent-token.
+ADOPT_API_URL = os.environ.get("ADOPT_API_URL", "").rstrip("/")
+ADOPT_CLIENT_ID = os.environ.get("ADOPT_CLIENT_ID", "")
+ADOPT_CLIENT_SECRET = os.environ.get("ADOPT_CLIENT_SECRET", "")
+
+
+def _resolve_auth_mode() -> str:
+    """Pick the Tabby auth flow: explicit NOUI_TABBY_AUTH_MODE wins, else auto-detect."""
+    explicit = os.environ.get("NOUI_TABBY_AUTH_MODE", "").strip().lower()
+    if explicit:
+        return explicit
+    if ADOPT_API_URL and ADOPT_CLIENT_ID and ADOPT_CLIENT_SECRET:
+        return "platform_jwt"
+    return "agent_token"
+
+
 # auth_plan.json lives at the output root (one level up from noui_runtime/)
 _AUTH_PLAN_PATH = Path(__file__).resolve().parent.parent / "auth_plan.json"
 
@@ -100,8 +122,13 @@ def _load_auth_plan() -> dict:
         raise RuntimeError(f"Failed to read auth_plan.json: {{exc}}") from exc
 
 
-async def _get_agent_token() -> str:
-    """Exchange client credentials for a short-lived agent JWT."""
+_TOKEN_REFRESH_MARGIN_SECONDS = 60
+_token_cache: dict[str, tuple[str, float]] = {{}}
+_token_lock = asyncio.Lock()
+
+
+async def _get_agent_token() -> tuple[str, int]:
+    """Local/self-host flow: exchange Tabby agent-client credentials for an agent JWT."""
     if not TABBY_CLIENT_ID or not TABBY_CLIENT_SECRET:
         raise RuntimeError(
             "Missing TABBY_CLIENT_ID or TABBY_CLIENT_SECRET.\\n"
@@ -120,7 +147,86 @@ async def _get_agent_token() -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    return data.get("access_token") or data.get("token", "")
+    token = data.get("access_token") or data.get("token", "")
+    if not token:
+        raise RuntimeError(f"POST /auth/agent-token returned no token: {{data}}")
+    return token, int(data.get("expires_in", 3600))
+
+
+async def _get_platform_jwt() -> str:
+    """Cloud flow step 1: exchange platform client credentials for a platform JWT.
+
+    Calls the Adopt platform proxy (POST /v1/users/api-token), which returns a
+    Frontegg-signed JWT that Tabby validates via its registered IdP.
+    """
+    if not ADOPT_API_URL:
+        raise RuntimeError(
+            "Missing ADOPT_API_URL for platform_jwt auth mode.\\n"
+            "Set ADOPT_API_URL (e.g. https://api.adopt.ai) in noui/.env "
+            "or run `noui tabby setup --cloud`."
+        )
+    if not ADOPT_CLIENT_ID or not ADOPT_CLIENT_SECRET:
+        raise RuntimeError(
+            "Missing ADOPT_CLIENT_ID or ADOPT_CLIENT_SECRET for platform_jwt auth mode.\\n"
+            "Set these in noui/.env or run `noui tabby setup --cloud`."
+        )
+    url = f"{{ADOPT_API_URL}}/v1/users/api-token"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            url,
+            json={{"client_id": ADOPT_CLIENT_ID, "secret": ADOPT_CLIENT_SECRET}},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    token = data.get("access_token", "")
+    if not token:
+        raise RuntimeError(f"Platform /v1/users/api-token returned no access_token: {{data}}")
+    return token
+
+
+async def _get_platform_tabby_token() -> tuple[str, int]:
+    """Cloud flow step 2: exchange the platform JWT for a Tabby JWT via token-exchange."""
+    platform_jwt = await _get_platform_jwt()
+    url = f"{{TABBY_API_HOST}}/auth/token-exchange"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            url,
+            json={{
+                "subject_token": platform_jwt,
+                "subject_token_type": "oidc_jwt",
+            }},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    token = data.get("access_token", "")
+    if not token:
+        raise RuntimeError(f"Tabby /auth/token-exchange returned no access_token: {{data}}")
+    return token, int(data.get("expires_in", 3600))
+
+
+async def _get_tabby_bearer() -> str:
+    """Return a valid Tabby bearer token for the active auth mode, cached in-process.
+
+    Mode is resolved from NOUI_TABBY_AUTH_MODE (explicit) or auto-detected from the
+    presence of ADOPT_* platform credentials. The token is cached until shortly
+    before it expires to avoid re-running the exchange on every credential fetch.
+    """
+    mode = _resolve_auth_mode()
+    async with _token_lock:
+        cached = _token_cache.get(mode)
+        if cached is not None and cached[1] > time.monotonic():
+            return cached[0]
+        if mode == "platform_jwt":
+            token, ttl = await _get_platform_tabby_token()
+        elif mode == "agent_token":
+            token, ttl = await _get_agent_token()
+        else:
+            raise RuntimeError(
+                f"Unknown NOUI_TABBY_AUTH_MODE {{mode!r}} — "
+                f"expected 'agent_token' or 'platform_jwt'."
+            )
+        _token_cache[mode] = (token, time.monotonic() + max(0, ttl - _TOKEN_REFRESH_MARGIN_SECONDS))
+        return token
 
 
 async def _tabby_credentials(profile_slug: str) -> dict:
@@ -128,13 +234,13 @@ async def _tabby_credentials(profile_slug: str) -> dict:
 
     Uses profile_slug (not the DB UUID) for the credentials/request call.
     """
-    agent_token = await _get_agent_token()
+    bearer = await _get_tabby_bearer()
     url = f"{{TABBY_API_HOST}}/credentials/request"
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             url,
             json={{"profile_id": profile_slug}},
-            headers={{"Authorization": f"Bearer {{agent_token}}"}},
+            headers={{"Authorization": f"Bearer {{bearer}}"}},
         )
         resp.raise_for_status()
         data = resp.json()

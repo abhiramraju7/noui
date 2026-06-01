@@ -16,6 +16,7 @@ def generate_adopt_profile(
     base_url: str,
     har_entries: list[dict],
     click_events: list[dict] | None = None,
+    profile_slug: str = "",
 ) -> dict:
     """Generate an ABCD-compatible adopt_profile.json.
 
@@ -23,6 +24,8 @@ def generate_adopt_profile(
         base_url: Process base_url (fallback if HAR analysis yields nothing).
         har_entries: Filtered HAR entries.
         click_events: Click event dicts for workflow_params extraction.
+        profile_slug: Tabby profile slug. When non-empty, exposed as a
+            top-level ``tabby_profile_id`` so per-step omission can resolve.
 
     Returns:
         Dict matching adopt_profile.json schema:
@@ -51,12 +54,17 @@ def generate_adopt_profile(
     if len(api_groups) > 1:
         profiles_map = _build_profiles_map(api_groups, har_entries)
 
-    return {
+    profile = {
         "base_url": effective_base_url,
         "security_params": security_params,
         "workflow_params": workflow_params,
         "profiles_map": profiles_map,
     }
+
+    if profile_slug:
+        profile["tabby_profile_id"] = profile_slug
+
+    return profile
 
 
 def _extract_workflow_params(click_events: list[dict]) -> dict:

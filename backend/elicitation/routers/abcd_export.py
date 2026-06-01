@@ -52,6 +52,7 @@ router = APIRouter(prefix="/abcd", tags=["abcd-export"])
 @router.post("/processes/{process_id}/export")
 async def export_abcd_workspace(
     process_id: str,
+    profile_slug: str = Query("", description="Tabby profile slug for browser-routed REST steps"),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate and download an ABCD workspace bundle as a zip file.
@@ -93,6 +94,7 @@ async def export_abcd_workspace(
         base_url=base_url,
         har_entries=filtered_har,
         click_events=data["click_dicts"],
+        profile_slug=profile_slug,
     )
 
     # WDL generation
@@ -102,6 +104,7 @@ async def export_abcd_workspace(
         narrations=data["narration_dicts"],
         timeline_events=data["timeline_dicts"],
         base_url=base_url,
+        profile_slug=profile_slug,
     )
 
     # Requirements

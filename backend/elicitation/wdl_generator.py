@@ -45,6 +45,7 @@ def generate_wdl(
     narrations: list[dict] | None = None,
     timeline_events: list[dict] | None = None,
     base_url: str = "",
+    profile_slug: str = "",
 ) -> dict:
     """Generate a WDL draft from captured data.
 
@@ -54,6 +55,9 @@ def generate_wdl(
         narrations: Narration dicts for step descriptions.
         timeline_events: Timeline event dicts for ordering context.
         base_url: Base URL to replace with ``{{base_url}}``.
+        profile_slug: Tabby profile slug. When non-empty, REST steps whose
+            host matches a detected auth domain are routed through Tabby's
+            browser via ``"via": "tabby"`` + ``"tabby_profile_id"``.
 
     Returns:
         {
@@ -81,6 +85,10 @@ def generate_wdl(
 
     # Phase 2: Detect data dependencies between HAR entries
     dependencies = detect_dependencies(har_entries)
+
+    # Hosts that require Tabby-routed execution (where auth was detected).
+    # Only relevant when a Tabby profile slug is supplied.
+    auth_hosts = _detect_auth_hosts(har_entries) if profile_slug else set()
 
     # Phase 3: Collect form input values for parameterization
     form_values = _collect_form_values(click_events)
@@ -112,6 +120,7 @@ def generate_wdl(
             detected_params,
             step_idx,
             dep_substitutions=dep_substitutions,
+            profile_slug=profile_slug, auth_hosts=auth_hosts,
         )
 
         # Add description from narration if available
@@ -178,6 +187,32 @@ def _detect_base_url(har_entries: list[dict]) -> str:
     if bases:
         return bases.most_common(1)[0][0]
     return ""
+
+
+# ── Tabby auth-host detection ─────────────────────────────────────────
+
+def _detect_auth_hosts(har_entries: list[dict]) -> set[str]:
+    """Return the set of hosts whose requests carry an auth indicator.
+
+    A host is treated as an "auth domain" (and thus a candidate for
+    Tabby-routed execution) when ``detect_auth_patterns`` finds any auth
+    signal — Authorization header, known API-key header/query param, or a
+    session-like cookie — among that host's requests.
+    """
+    from backend.elicitation.auth_detector import detect_auth_patterns
+
+    by_host: dict[str, list[dict]] = {}
+    for entry in har_entries:
+        url = entry.get("request", {}).get("url", "")
+        host = urlparse(url).netloc
+        if host:
+            by_host.setdefault(host, []).append(entry)
+
+    auth_hosts: set[str] = set()
+    for host, entries in by_host.items():
+        if detect_auth_patterns(entries)["primary_auth"] != "none":
+            auth_hosts.add(host)
+    return auth_hosts
 
 
 # ── Dependency detection ─────────────────────────────────────────────────────
@@ -252,6 +287,8 @@ def _build_rest_step(
     detected_params: dict[str, dict],
     step_idx: int,
     dep_substitutions: dict[str, str] | None = None,
+    profile_slug: str = "",
+    auth_hosts: set[str] | None = None,
 ) -> dict:
     """Build a WDL REST step from a HAR entry."""
     request = entry.get("request", {})
@@ -326,6 +363,12 @@ def _build_rest_step(
 
     if status:
         step["config"]["expected_status"] = status
+
+    # Route through Tabby's browser when this host requires authenticated /
+    # anti-bot access and a Tabby profile is available.
+    if profile_slug and auth_hosts and urlparse(url).netloc in auth_hosts:
+        step["via"] = "tabby"
+        step["tabby_profile_id"] = profile_slug
 
     return step
 

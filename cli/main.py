@@ -1980,6 +1980,14 @@ def cmd_autopilot_verify_extension(args: argparse.Namespace) -> int:  # noqa: AR
         print(_red(f"NoUI backend not reachable at {BACKEND_URL}"))
         return 1
 
+    # Tabby mode has no Chrome extension — the worker serves browser commands via
+    # /execute/browser. Extension verification is not applicable; skip cleanly.
+    if _is_tabby_mode():
+        print(_green("Tabby mode active — no Chrome extension to verify."))
+        print("  Browser commands are served by the Tabby worker via /execute/browser.")
+        print("  Skipping extension preflight.")
+        return 0
+
     # Commands to test — a representative set covering original + agent-friendly commands
     test_commands = [
         ("get_page_info", {}),

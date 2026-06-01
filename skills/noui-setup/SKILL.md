@@ -63,11 +63,27 @@ Open `.env` and fill in:
 | Variable | Required | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Powers the MCP compiler's LLM calls |
-| `TABBY_API_HOST` | Auth flows only | Tabby endpoint (default: `http://localhost:8080`) |
-| `TABBY_ADMIN_TOKEN` | Auth flows only | Admin token for provisioning Tabby profiles |
+| `TABBY_API_URL` | Auth flows only | Tabby base URL (default: `http://localhost:8080`) |
+| `TABBY_ADMIN_TOKEN` | Local auth flows | Admin token for provisioning Tabby profiles (local only) |
 | `NOUI_PORT` | No | Backend port (default: `8002`) |
 
 If you only need unauthenticated app support, `ANTHROPIC_API_KEY` is the only required field.
+
+### Authenticated apps — two ways to reach Tabby
+
+NoUI picks the auth flow from `NOUI_TABBY_AUTH_MODE` (or auto-detects: `platform_jwt` when `ADOPT_*` are set, else `agent_token`).
+
+- **Local / self-host Tabby (`agent_token`):** `TABBY_API_URL` + `TABBY_ADMIN_TOKEN`, then `tabby setup` mints `TABBY_CLIENT_ID`/`TABBY_CLIENT_SECRET`.
+- **Cloud / staging Tabby (`platform_jwt`):** no admin token — you authenticate as yourself with a platform **Personal Access Token**:
+
+  | Variable | Purpose |
+  |---|---|
+  | `TABBY_API_URL` | Cloud/staging Tabby base URL |
+  | `ADOPT_API_URL` | Adopt platform base URL (e.g. `https://api.adopt.ai`) |
+  | `ADOPT_CLIENT_ID` / `ADOPT_CLIENT_SECRET` | A platform **PAT** — create at `app.adopt.ai/dashboard#/admin-box/` |
+  | `NOUI_TABBY_AUTH_MODE` | Optional; leave blank to auto-detect, or set `platform_jwt` |
+
+  Run `tabby setup --cloud` to verify the round-trip and write these to `.env`. Your org's **tenant must already exist in the cloud Tabby** (feature-flag-enabled orgs have it) or token-exchange fails with `Tenant not found`.
 
 ---
 
@@ -139,12 +155,15 @@ Start
 | `.venv/bin/python cli/main.py tabby status` | Check Docker Compose services and Tabby API liveness |
 | `.venv/bin/python cli/main.py tabby start` | Start Docker Compose infra and Tabby API |
 | `.venv/bin/python cli/main.py tabby stop [--infra]` | Stop the Tabby API (and optionally Docker Compose) |
-| `.venv/bin/python cli/main.py tabby setup` | Full Tabby provisioning: agent client + ServiceProfiles + write TABBY_* to `.env` |
+| `.venv/bin/python cli/main.py tabby setup` | Local Tabby provisioning: agent client + ServiceProfiles + write TABBY_* to `.env` |
+| `.venv/bin/python cli/main.py tabby setup --cloud` | Cloud/staging: verify the PAT→platform-JWT→Tabby round-trip and write ADOPT_*/TABBY_API_URL/`NOUI_TABBY_AUTH_MODE=platform_jwt` to `.env` (no admin token) |
 | `.venv/bin/python cli/main.py tabby session status` | Show browser session state for configured profiles |
 | `.venv/bin/python cli/main.py tabby session ensure` | Ensure a HEALTHY browser session exists |
 | `.venv/bin/python cli/main.py tabby session stop` | Stop the locally-running worker |
 
-> **Tabby setup** — for authenticated app workflows, run `tabby start` then `tabby setup` (interactive) to provision agent credentials and ServiceProfiles. This writes `TABBY_CLIENT_ID`, `TABBY_CLIENT_SECRET`, and `TABBY_API_URL` to `.env`. You still need `TABBY_ADMIN_TOKEN` (or `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` in `tabby/.env.local`) for the provisioning step.
+> **Tabby setup (local)** — for authenticated app workflows against a local Tabby, run `tabby start` then `tabby setup` (interactive) to provision agent credentials and ServiceProfiles. This writes `TABBY_CLIENT_ID`, `TABBY_CLIENT_SECRET`, and `TABBY_API_URL` to `.env`. You still need `TABBY_ADMIN_TOKEN` (or `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` in `tabby/.env.local`) for the provisioning step.
+>
+> **Tabby setup (cloud/staging)** — run `tabby setup --cloud` instead. No local Tabby or admin token: it uses a platform **PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) to mint a platform JWT, exchanges it for a Tabby JWT, and on success writes `ADOPT_API_URL`, `TABBY_API_URL` and `NOUI_TABBY_AUTH_MODE=platform_jwt`. The generated MCP/skill runtime then authenticates the same way.
 
 ---
 

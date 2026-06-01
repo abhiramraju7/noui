@@ -205,7 +205,8 @@ python3 -m venv .venv
 # 2. Configure environment
 cp .env.example .env
 # Edit .env: set ANTHROPIC_API_KEY (required)
-#            TABBY_API_HOST, TABBY_ADMIN_TOKEN (authenticated apps only)
+#            TABBY_API_URL, TABBY_ADMIN_TOKEN (local authenticated apps)
+#            or, for cloud/staging Tabby: ADOPT_API_URL + ADOPT_CLIENT_ID/SECRET (a platform PAT)
 
 # 3. Load the Chrome extension
 # Chrome → chrome://extensions → Developer mode → Load unpacked → select noui/extension/

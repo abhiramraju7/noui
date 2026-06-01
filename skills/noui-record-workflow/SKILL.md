@@ -41,7 +41,7 @@ Playwright's `page.evaluate()`:
 
 1. The operation calls `execute_fetch(PROFILE_SLUG, url, method=..., headers=...)`.
 2. The adapter exchanges agent credentials for a bearer token, then POSTs to
-   `{TABBY_API_HOST}/execute/fetch` with the profile ID, URL, and parameters.
+   `{TABBY_API_URL}/execute/fetch` with the profile ID, URL, and parameters.
 3. The Tabby API resolves the profile to a healthy session, routes to the
    worker pod, and the worker runs `fetch(url, {credentials: 'include'})`
    inside the authenticated browser — so the real browser's cookies, TLS
@@ -72,7 +72,7 @@ from the MCP process to the Tabby API.
 ### Runtime prerequisites
 
 - Tabby must be running with a healthy session for the profile.
-- `TABBY_API_HOST`, `TABBY_CLIENT_ID`, and `TABBY_CLIENT_SECRET` must be set
+- `TABBY_API_URL`, `TABBY_CLIENT_ID`, and `TABBY_CLIENT_SECRET` must be set
   (in `noui/.env` or environment). If not, the first call raises a clear error.
 
 ### Escape hatch — `--execution-mode http`

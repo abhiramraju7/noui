@@ -142,7 +142,205 @@ class TestTabbyApiHostConfig:
 
     def test_env_var_override(self) -> None:
         src = _generated()
-        # Must prefer TABBY_API_URL or TABBY_API_HOST env vars
-        assert "TABBY_API_URL" in src or "TABBY_API_HOST" in src, (
-            "Generated auth.py must allow overriding TABBY_API_HOST via environment"
+        # Must read the single TABBY_API_URL env var
+        assert "TABBY_API_URL" in src, (
+            "Generated auth.py must allow overriding the Tabby base URL via TABBY_API_URL"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cloud (platform_jwt) auth mode
+# ---------------------------------------------------------------------------
+
+import asyncio
+import os
+import tempfile
+import types
+from contextlib import contextmanager
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:  # pragma: no cover - trivial
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+@contextmanager
+def _generated_module(env: dict):
+    """Exec the generated auth.py into a fresh namespace under a controlled env.
+
+    Module-level code reads ADOPT_*/TABBY_* at import time and ``_resolve_auth_mode``
+    reads NOUI_TABBY_AUTH_MODE live, so the env stays set for the duration of the
+    ``with`` block (matching a real deployment where env is stable). A dummy
+    ``__file__`` keeps the .env walk-up from finding a real .env.
+    """
+    saved = dict(os.environ)
+    try:
+        for key in (
+            "NOUI_TABBY_AUTH_MODE",
+            "ADOPT_API_URL",
+            "ADOPT_CLIENT_ID",
+            "ADOPT_CLIENT_SECRET",
+            "TABBY_CLIENT_ID",
+            "TABBY_CLIENT_SECRET",
+            "TABBY_API_URL",
+            "TABBY_API_HOST",
+            "NOUI_ENV_FILE",
+        ):
+            os.environ.pop(key, None)
+        os.environ.update(env)
+        g: dict = {"__file__": os.path.join(tempfile.gettempdir(), "noui_gen_auth_test.py")}
+        exec(compile(_generated(), "<generated>", "exec"), g)
+        yield g
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+@contextmanager
+def _fake_httpx(module: dict, responses: dict):
+    """Patch the generated module's ``httpx`` with a recorder. Yields the call log."""
+    log: list[tuple] = []
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            log.append((url, json, headers))
+            for suffix, payload in responses.items():
+                if url.endswith(suffix):
+                    return _FakeResponse(payload)
+            raise AssertionError(f"unexpected POST url: {url}")
+
+    original = module["httpx"]
+    module["httpx"] = types.SimpleNamespace(AsyncClient=lambda *a, **k: _FakeAsyncClient())
+    try:
+        yield log
+    finally:
+        module["httpx"] = original
+
+
+class TestGeneratedSourceCompiles:
+    def test_compiles(self) -> None:
+        """f-string brace escaping must produce valid Python."""
+        compile(generate_auth_adapter("http://localhost:8080"), "<generated>", "exec")
+
+
+class TestAuthModeResolution:
+    def test_defaults_to_agent_token(self) -> None:
+        with _generated_module({}) as g:
+            assert g["_resolve_auth_mode"]() == "agent_token"
+
+    def test_auto_platform_jwt_when_adopt_creds_present(self) -> None:
+        with _generated_module(
+            {
+                "ADOPT_API_URL": "https://api.adopt.ai",
+                "ADOPT_CLIENT_ID": "c",
+                "ADOPT_CLIENT_SECRET": "s",
+            }
+        ) as g:
+            assert g["_resolve_auth_mode"]() == "platform_jwt"
+
+    def test_explicit_mode_overrides_autodetect(self) -> None:
+        with _generated_module(
+            {
+                "NOUI_TABBY_AUTH_MODE": "agent_token",
+                "ADOPT_API_URL": "https://api.adopt.ai",
+                "ADOPT_CLIENT_ID": "c",
+                "ADOPT_CLIENT_SECRET": "s",
+            }
+        ) as g:
+            assert g["_resolve_auth_mode"]() == "agent_token"
+
+
+class TestPlatformJwtFlow:
+    _CREDS = {
+        "credentials": {
+            "headers": [{"name": "Authorization", "value": "Bearer LIVE"}],
+            "cookies": [],
+        }
+    }
+
+    def test_two_hop_exchange_then_credentials(self) -> None:
+        env = {
+            "ADOPT_API_URL": "https://api.adopt.ai",
+            "ADOPT_CLIENT_ID": "cid",
+            "ADOPT_CLIENT_SECRET": "sec",
+            "TABBY_API_URL": "https://tabby.cloud",
+        }
+        responses = {
+            "/v1/users/api-token": {"access_token": "PLATFORM_JWT"},
+            "/auth/token-exchange": {"access_token": "TABBY_JWT", "expires_in": 3600},
+            "/credentials/request": self._CREDS,
+        }
+        with _generated_module(env) as g, _fake_httpx(g, responses) as log:
+            headers = asyncio.run(g["_tabby_credentials"]("my-profile"))
+
+        urls = [u for (u, _j, _h) in log]
+        assert urls == [
+            "https://api.adopt.ai/v1/users/api-token",
+            "https://tabby.cloud/auth/token-exchange",
+            "https://tabby.cloud/credentials/request",
+        ]
+        # token-exchange receives the platform JWT as an oidc_jwt subject token
+        _u, exchange_body, _h = log[1]
+        assert exchange_body == {"subject_token": "PLATFORM_JWT", "subject_token_type": "oidc_jwt"}
+        # credentials/request is authorized with the exchanged Tabby JWT
+        _u, _b, creds_headers = log[2]
+        assert creds_headers == {"Authorization": "Bearer TABBY_JWT"}
+        assert headers == {"Authorization": "Bearer LIVE"}
+
+    def test_agent_token_mode_does_not_call_token_exchange(self) -> None:
+        env = {
+            "TABBY_CLIENT_ID": "cid",
+            "TABBY_CLIENT_SECRET": "sec",
+            "TABBY_API_URL": "https://tabby.local",
+        }
+        responses = {
+            "/auth/agent-token": {"access_token": "AGENT_JWT", "expires_in": 3600},
+            "/credentials/request": self._CREDS,
+        }
+        with _generated_module(env) as g, _fake_httpx(g, responses) as log:
+            asyncio.run(g["_tabby_credentials"]("my-profile"))
+
+        urls = [u for (u, _j, _h) in log]
+        assert urls == [
+            "https://tabby.local/auth/agent-token",
+            "https://tabby.local/credentials/request",
+        ]
+        assert all("token-exchange" not in u for u in urls)
+
+    def test_token_is_cached_across_calls(self) -> None:
+        env = {
+            "ADOPT_API_URL": "https://api.adopt.ai",
+            "ADOPT_CLIENT_ID": "cid",
+            "ADOPT_CLIENT_SECRET": "sec",
+            "TABBY_API_URL": "https://tabby.cloud",
+        }
+        responses = {
+            "/v1/users/api-token": {"access_token": "PLATFORM_JWT"},
+            "/auth/token-exchange": {"access_token": "TABBY_JWT", "expires_in": 3600},
+            "/credentials/request": self._CREDS,
+        }
+        with _generated_module(env) as g, _fake_httpx(g, responses) as log:
+
+            async def _two() -> None:
+                await g["_tabby_credentials"]("p")
+                await g["_tabby_credentials"]("p")
+
+            asyncio.run(_two())
+
+        urls = [u for (u, _j, _h) in log]
+        # Token endpoints hit exactly once; credentials/request hit twice.
+        assert urls.count("https://api.adopt.ai/v1/users/api-token") == 1
+        assert urls.count("https://tabby.cloud/auth/token-exchange") == 1
+        assert urls.count("https://tabby.cloud/credentials/request") == 2

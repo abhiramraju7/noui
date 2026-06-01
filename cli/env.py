@@ -1,6 +1,6 @@
 """Environment resolution for the NoUI CLI.
 
-The CLI historically read ``TABBY_API_HOST`` straight from ``os.environ`` at
+The CLI historically read ``TABBY_API_URL`` straight from ``os.environ`` at
 import time, which meant a ``.env`` file in the repository root (the canonical
 location documented in ``.env.example`` and consumed by ``backend/config.py``)
 was silently ignored when running ``noui`` subcommands. The result was a
@@ -59,7 +59,7 @@ def resolve_tabby_api_host(env: Mapping[str, str] | None = None) -> str:
 
     Resolution order:
 
-    1. ``TABBY_API_HOST`` from the supplied mapping (defaults to
+    1. ``TABBY_API_URL`` from the supplied mapping (defaults to
        :data:`os.environ`, which callers are expected to have populated via
        :func:`load_env_files`).
     2. :data:`DEFAULT_TABBY_API_HOST` when the value is missing or empty.
@@ -72,7 +72,7 @@ def resolve_tabby_api_host(env: Mapping[str, str] | None = None) -> str:
       starting with ``/``.
     """
     src = env if env is not None else os.environ
-    raw = (src.get("TABBY_API_HOST") or "").strip()
+    raw = (src.get("TABBY_API_URL") or "").strip()
     if not raw:
         raw = DEFAULT_TABBY_API_HOST
     if "://" not in raw:

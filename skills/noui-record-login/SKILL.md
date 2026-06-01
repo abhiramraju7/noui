@@ -11,7 +11,7 @@ Record a login flow for an authenticated app and register it with Tabby to produ
 
 All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`.
 
-**Prerequisite:** `/noui-setup` must be complete — venv installed, `.env` configured with `ANTHROPIC_API_KEY`, `TABBY_API_HOST`, and `TABBY_ADMIN_TOKEN`, Chrome extension loaded.
+**Prerequisite:** `/noui-setup` must be complete — venv installed, `.env` configured with `ANTHROPIC_API_KEY`, `TABBY_API_URL`, and `TABBY_ADMIN_TOKEN`, Chrome extension loaded.
 
 ---
 
@@ -114,7 +114,7 @@ Check the output for:
 
 ## Step 6 — Register with Tabby
 
-Tabby must be reachable at `TABBY_API_HOST` (default `http://localhost:8080`) and `TABBY_ADMIN_TOKEN` must be set in `.env`.
+Tabby must be reachable at `TABBY_API_URL` (default `http://localhost:8080`) and `TABBY_ADMIN_TOKEN` must be set in `.env`.
 
 > **If Tabby is not yet running:** run `noui tabby start` then `noui tabby setup` (interactive) to start the service and provision agent credentials before registering. See `/noui-setup` for the full Tabby CLI reference.
 
@@ -169,7 +169,7 @@ Polls Tabby for up to 60 seconds waiting for the profile to reach HEALTHY state.
 | Symptom | Fix |
 |---|---|
 | Profile enters FAILED state | Re-record with slower, more deliberate interactions |
-| Timeout (60s) | Check Tabby logs; confirm `TABBY_API_HOST` is reachable |
+| Timeout (60s) | Check Tabby logs; confirm `TABBY_API_URL` is reachable |
 | Keepalive URL errors | The keepalive URL must return HTTP 200 when authenticated — redirect-only URLs are not valid |
 
 ---
@@ -199,7 +199,7 @@ Starts (or verifies) a persistent browser session worker for the registered prof
 | Symptom | Fix |
 |---|---|
 | `TABBY_CLIENT_ID` / `TABBY_CLIENT_SECRET` not set | Run `tabby setup` to provision agent credentials and write them to `.env` |
-| Worker starts but immediately exits | Check `.noui-backend.log`; confirm Tabby is reachable at `TABBY_API_HOST` |
+| Worker starts but immediately exits | Check `.noui-backend.log`; confirm Tabby is reachable at `TABBY_API_URL` |
 | Profile not found in cache | Confirm `login register` ran successfully — it adds the profile to the cache automatically |
 | `Credentials not found for k8s:secret/...` | Run `login credentials <bundle.json>` to set username/password |
 
@@ -289,7 +289,7 @@ Start
 | Symptom | Fix |
 |---|---|
 | Backend not running | `.venv/bin/python cli/main.py start` |
-| `Tabby API not reachable` | Confirm Tabby is running; check `TABBY_API_HOST` in `.env` |
+| `Tabby API not reachable` | Confirm Tabby is running; check `TABBY_API_URL` in `.env` |
 | Bundle has generator errors | Re-record with slower, explicit interactions; avoid rapid clicks |
 | App or Login process missing in extension | Confirm Step 2 ran successfully; check backend is running |
 | Low selector confidence in review | Re-record; interact with fields one at a time with visible focus |

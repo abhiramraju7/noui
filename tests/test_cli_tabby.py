@@ -273,3 +273,96 @@ class TestLoginRegisterOutput:
         assert "my-app" in tabby_line
         assert "db-uuid-2222" not in tabby_line
         assert "ServiceProfile DB ID" in out
+
+
+# ---------------------------------------------------------------------------
+# 5. tabby setup --cloud (platform-JWT token-exchange onboarding)
+# ---------------------------------------------------------------------------
+
+
+class TestTabbySetupCloud:
+    """`tabby setup --cloud` verifies the token-exchange round-trip then writes .env."""
+
+    def _args(self, tmp_path: Path, **over: object) -> SimpleNamespace:
+        base: dict = {
+            "cloud": True,
+            "adopt_api_url": "https://api.adopt.ai",
+            "adopt_client_id": "cid",
+            "adopt_client_secret": "sec",
+            "tabby_url": "https://tabby.cloud",
+            "env_file": str(tmp_path / ".env"),
+            "profiles": None,
+            "force": False,
+        }
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    @staticmethod
+    def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
+        for key in (
+            "ADOPT_API_URL",
+            "ADOPT_CLIENT_ID",
+            "ADOPT_CLIENT_SECRET",
+            "TABBY_API_URL",
+            "TABBY_API_HOST",
+            "NOUI_TABBY_AUTH_MODE",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_writes_env_on_successful_exchange(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+
+        def fake_urlopen(req, *_a, **_k):
+            url = req.full_url
+            if url.endswith("/v1/users/api-token"):
+                return _FakeResponse({"access_token": "PLATFORM_JWT"})
+            if url.endswith("/auth/token-exchange"):
+                return _FakeResponse({"access_token": "TABBY_JWT"})
+            raise AssertionError(f"unexpected url {url}")
+
+        with _patched_urlopen(side_effect=fake_urlopen):
+            rc = cli_main.cmd_tabby_setup(self._args(tmp_path))
+
+        assert rc == 0
+        env = (tmp_path / ".env").read_text()
+        assert "NOUI_TABBY_AUTH_MODE=platform_jwt" in env
+        assert "TABBY_API_URL=https://tabby.cloud" in env
+        assert "ADOPT_API_URL=https://api.adopt.ai" in env
+        assert "ADOPT_CLIENT_ID=cid" in env
+        assert "ADOPT_CLIENT_SECRET=sec" in env
+
+    def test_missing_creds_returns_error_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        args = self._args(
+            tmp_path,
+            adopt_api_url=None,
+            adopt_client_id=None,
+            adopt_client_secret=None,
+            tabby_url=None,
+        )
+        rc = cli_main.cmd_tabby_setup(args)
+        assert rc == 1
+        assert not (tmp_path / ".env").exists()
+
+    def test_token_exchange_failure_returns_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+
+        def fake_urlopen(req, *_a, **_k):
+            url = req.full_url
+            if url.endswith("/v1/users/api-token"):
+                return _FakeResponse({"access_token": "PLATFORM_JWT"})
+            if url.endswith("/auth/token-exchange"):
+                raise _make_http_error(401, '{"detail":"No registered IdP for issuer"}')
+            raise AssertionError(f"unexpected url {url}")
+
+        with _patched_urlopen(side_effect=fake_urlopen):
+            rc = cli_main.cmd_tabby_setup(self._args(tmp_path))
+
+        assert rc == 1
+        assert not (tmp_path / ".env").exists()

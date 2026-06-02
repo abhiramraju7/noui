@@ -127,6 +127,8 @@ Externally-validated IdP tokens (`jti:null`) bypass the blacklist; a leaked owne
 
 ## D. Documentation / DX corrections (fix in the existing skills)
 
+> **Status — addressed.** D1, D3, D4, D5, D6, D7 and the NoUI-side of D8 (`streaming_mode` removal) are now fixed in code and/or docs; D2 was already resolved during the `cdp`→`tabby` rename. D1 and D7 were fixed at the source (durable), not band-aided: NoUI now emits `credential_types.cookies` as `[{name, volatility}]` objects, and the CLI/backend/verifier default `TABBY_API_URL` is aligned to `:8000`. **Still open (Tabby-side):** D8's dead `AppTemplatesService.findByPattern` and the inert `credential_ref_default` / `idle_shutdown_seconds` template fields — these live in the pinned Tabby submodule and need a separate Tabby change.
+
 ### D1 — `credential_types` cookie-shape bug is a NoUI emit bug, not a Tabby bug `[high · docs]`
 `/noui-generalize` "Fix A" frames it as a Tabby format bug fixed by one-off SQL. Root cause: NoUI emits a **string array** of cookie names; Tabby's cookie consumer requires `[{name, volatility}]` objects and stores the DTO verbatim. The SQL is a per-profile band-aid that recurs on every `register` and would multiply across all tenant users under a template.
 - **Evidence:** `compiler/login/tabby_draft_generator.py:543,201`; `compiler/mcp/auth_plan.py:159`; `credentials.service.ts:629` (cookies strict), `:660` (headers tolerant), `:322` (template reuse).

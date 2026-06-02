@@ -63,7 +63,7 @@ Open `.env` and fill in:
 | Variable | Required | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Powers the MCP compiler's LLM calls |
-| `TABBY_API_URL` | Auth flows only | Tabby base URL (default: `http://localhost:8080`) |
+| `TABBY_API_URL` | Auth flows only | Tabby base URL (default: `http://localhost:8000`) |
 | `TABBY_ADMIN_TOKEN` | Local auth flows | Admin token for provisioning Tabby profiles (local only) |
 | `NOUI_PORT` | No | Backend port (default: `8002`) |
 
@@ -163,7 +163,7 @@ Start
 
 > **Tabby setup (local)** — for authenticated app workflows against a local Tabby, run `tabby start` then `tabby setup` (interactive) to provision agent credentials and ServiceProfiles. This writes `TABBY_CLIENT_ID`, `TABBY_CLIENT_SECRET`, and `TABBY_API_URL` to `.env`. You still need `TABBY_ADMIN_TOKEN` (or `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` in `tabby/.env.local`) for the provisioning step.
 >
-> **Tabby setup (cloud/staging)** — run `tabby setup --cloud` instead. No local Tabby or admin token: it uses a platform **PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) to mint a platform JWT, exchanges it for a Tabby JWT, and on success writes `ADOPT_API_URL`, `TABBY_API_URL` and `NOUI_TABBY_AUTH_MODE=platform_jwt`. The generated MCP/skill runtime then authenticates the same way.
+> **Tabby setup (cloud/staging)** — run `tabby setup --cloud` instead. No local Tabby or admin token: it uses a platform **PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) to mint a platform JWT, exchanges it for a Tabby JWT, and on success writes `ADOPT_API_URL`, `TABBY_API_URL` and `NOUI_TABBY_AUTH_MODE=platform_jwt`. ⚠️ `tabby setup --cloud` only **verifies** the token round-trip and writes env — it provisions no App/Profile. And the default `tabby` execution mode does **not** use platform-JWT at runtime: it authenticates with `TABBY_CLIENT_ID`/`TABBY_CLIENT_SECRET` (agent token). To use platform-JWT at runtime today, export with `--execution-mode http`. See `/noui-tabby-integration` → `reference/execute-and-runtime.md` for the auth-mode × execution-mode matrix.
 
 ---
 

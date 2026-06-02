@@ -21,7 +21,7 @@ The generalization logic is identical for either output format:
 - **MCP output:** edit `workbench/mcp_servers/<app>/<server>/operations/<tool>.py` — the body of `async def execute(...)`. The FastMCP tool signature in `server.py` mirrors the execute() signature, so renaming params also requires updating the `server.py` decorator args.
 - **Skill output:** edit `workbench/skills/<app>/operations/<tool>.py` — the body of `async def execute(...)` *and* the `_build_parser()` argparse registrations, because the skill operation is a standalone CLI script. The `SKILL.md` body's command examples also reference the flag names, so update them too (or regenerate SKILL.md by re-running `workflow export --as skill --description-override "..."`).
 
-The Phase 0 execution diagnosis (bot detection, empty credentials, profile promotion) applies to both outputs unchanged — both runtimes share the same `noui_runtime/auth.py` and the same Tabby credential flow.
+The Phase 0 execution diagnosis (bot detection, empty credentials, profile promotion) applies to both outputs unchanged. Note the default `tabby` execution mode uses `noui_runtime/execute.py` (`execute_fetch` → Tabby `/execute/fetch`); only the legacy `--execution-mode http` path uses `noui_runtime/auth.py` (`resolve_auth` → `/credentials/request`).
 
 After generalizing a skill, use `/noui-generate-skill` (not `/noui-generate-mcp`) for install / test.
 
@@ -112,9 +112,11 @@ If 200 from execute/fetch but 429 from httpx → **confirmed TLS fingerprinting*
 
 ## Phase 1 — Fix Execution Strategy
 
-### Fix A — credential_types format bug
+### Fix A — credential_types format bug (legacy profiles only)
 
-After a fresh `login register`, the `service_profiles` table stores `credential_types.cookies` as a string array (`["cookie_a", "cookie_b"]`), but `credentials.service.ts` expects object arrays with `.name`. Every cookie comes back with empty name and value.
+NoUI now emits `credential_types.cookies` in Tabby's required `[{name, volatility}]` object form (fixed at the source in `compiler/login/tabby_draft_generator.py` and `compiler/mcp/auth_plan.py`), so **fresh `login register` runs are already correct** — you should not need this fix on a newly registered profile.
+
+It only applies to **profiles registered before that fix**, which stored `credential_types.cookies` as a plain string array (`["cookie_a", "cookie_b"]`). `credentials.service.ts` iterates cookies expecting objects with `.name`, so every cookie from such a profile comes back with empty name and value. (Only cookies are strict — Tabby tolerates header *names* as plain strings.) Remediate an affected legacy profile with:
 
 ```sql
 -- Run from tabby/ directory:

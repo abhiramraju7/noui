@@ -20,7 +20,7 @@ All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`
 - **ALWAYS** start the backend before asking the user to record
 - **ALWAYS** run `login review` after export and before register — never skip it even for clean-looking recordings
 - **NEVER** run `login register` if the review output shows `Generator valid: No` or any generator errors
-- **NEVER** use the `tabby_profile_id` in a workflow export until `login validate` succeeds with a HEALTHY state
+- **NEVER** use the `tabby_profile_id` in a workflow export until `login validate` confirms a HEALTHY browser *session* (a profile has no HEALTHY state — see Step 8)
 - **ALWAYS** note the `tabby_profile_id` printed by `login register` — it is needed for `/noui-record-workflow`
 
 ---
@@ -162,7 +162,7 @@ Credentials are stored in:
 .venv/bin/python cli/main.py login validate workbench/login_recordings/noui-<session_id8>-bundle.json
 ```
 
-Polls Tabby for up to 60 seconds waiting for the profile to reach HEALTHY state.
+Polls Tabby for up to 60 seconds waiting for a HEALTHY browser *session* for the profile's app. (The profile has no HEALTHY state — its `version_state` is `STAGING/CANARY/ACTIVE/RETIRED`; `HEALTHY` is a *session* state, and this command polls the `sessions` table.)
 
 **If validation fails:**
 
@@ -176,7 +176,7 @@ Polls Tabby for up to 60 seconds waiting for the profile to reach HEALTHY state.
 
 ## Step 9 — Ensure a Live Tabby Browser Session
 
-A HEALTHY profile in Tabby is a service configuration record. It does **not** mean a live browser session is running. The runtime auth adapter (`noui_runtime/auth.py`) needs an active session worker to fetch credentials at tool-call time.
+A HEALTHY browser session is distinct from the profile's `version_state` — a profile is just a config record and never enters a HEALTHY state. The runtime needs an active session worker to reach Tabby at tool-call time: the default `tabby` execution mode via `noui_runtime/execute.py` (`execute_fetch` → `/execute/fetch`), or the legacy `--execution-mode http` path via `noui_runtime/auth.py` (`resolve_auth` → `/credentials/request`). For why a profile can be usable only by its creator vs tenant-wide (the `owner_user_id` scoping model), see `/noui-tabby-integration`.
 
 ```bash
 .venv/bin/python cli/main.py tabby session ensure --profile <profile_id>
@@ -276,7 +276,7 @@ Start
 | `.venv/bin/python cli/main.py login review <bundle.json>` | Print validation and review items |
 | `.venv/bin/python cli/main.py login register <bundle.json>` | Provision Application + STAGING ServiceProfile in Tabby |
 | `.venv/bin/python cli/main.py login credentials <bundle.json>` | Set username/password for a registered profile |
-| `.venv/bin/python cli/main.py login validate <bundle.json>` | Wait for profile to become HEALTHY |
+| `.venv/bin/python cli/main.py login validate <bundle.json>` | Wait for a HEALTHY browser session for the profile |
 | `.venv/bin/python cli/main.py login import <session_id>` | Convenience: export + review + register |
 | `.venv/bin/python cli/main.py login import <session_id> --validate` | Convenience: export + review + register + validate |
 | `.venv/bin/python cli/main.py tabby session ensure --profile <id>` | Start or verify a live browser session worker |
@@ -295,5 +295,5 @@ Start
 | Low selector confidence in review | Re-record; interact with fields one at a time with visible focus |
 | Validate timeout (60s) | Check Tabby logs; verify the keepalive URL returns HTTP 200 when authenticated |
 | `Credentials not found for k8s:secret/...` | Run `login credentials <bundle.json>` to set username/password |
-| `TRANSIENT_FAIL` on health check | The site may be rate-limiting (429) the `url_check`. Update the app's keepalive config in Tabby to use a `dom_check` on `body` instead via `PUT /apps/{app_id}` |
+| `TRANSIENT_FAIL` on health check | The site may be rate-limiting (429) the `url_check`. Switch the app's keepalive via `PUT /apps/{app_id}`. ⚠️ `dom_check` on `body` can false-negative on SPAs (Salesforce Lightning, Workday) where `body` reports not-visible even when logged in — for those, point `url_check` at a stable authenticated URL or use a specific (non-`body`) `dom_check` selector |
 | Keepalive URL is redirect-only | Find a URL that loads authenticated content, not a redirect chain |

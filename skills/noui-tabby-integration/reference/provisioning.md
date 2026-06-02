@@ -24,7 +24,7 @@ There are two entry points, both creating the **same two-step App + ServiceProfi
 
 Then `noui login credentials <bundle>` prompts username/password, stores the username + `credential_ref` in the cache, and writes `<PREFIX>_PASSWORD` to `tabby/.env.local`. `noui login validate <bundle>` polls for a **HEALTHY session** (not profile state). `noui tabby session ensure --profile <slug>` spawns the live worker.
 
-> **The STAGING trap.** The documented login happy path (`register → credentials → validate → session ensure`) **never promotes the profile out of `STAGING`**. But the runtime resolver only matches `ACTIVE`/`CANARY` (`credentials.service.ts:224,268`). A profile from the login flow alone will `404 No active profile` at the first tool call. Promotion happens only via `noui tabby setup` (below) or a manual SQL/promote step. See [troubleshooting.md](troubleshooting.md) and [gaps.md](gaps.md).
+> **The STAGING trap.** The documented login happy path (`register → credentials → validate → session ensure`) leaves the profile in `STAGING` unless you promote it. The runtime resolver only matches `ACTIVE`/`CANARY` (`credentials.service.ts:224,268`), so a `STAGING`-only profile `404`s `No active profile` at the first tool call. **Fix (gaps.md B1, now implemented):** promote with `noui login register <bundle> --promote`, the standalone `noui login promote <bundle>`, or `noui login import <session_id> --promote` — all run the same `STAGING → CANARY → ACTIVE` walk as `noui tabby setup`. See [troubleshooting.md](troubleshooting.md) and [gaps.md](gaps.md).
 
 ### `noui tabby setup` (local, `cmd_tabby_setup`, `cli/main.py:4167`)
 

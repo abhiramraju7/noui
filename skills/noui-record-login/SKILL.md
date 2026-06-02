@@ -132,6 +132,34 @@ Registered profile '<profile_id>'
 
 **Record the `tabby_profile_id` value** — this is the `--profile` argument for `workflow export --as mcp`.
 
+> **The STAGING trap — you MUST promote before any tool call.** A freshly
+> registered profile is left in `STAGING`, but the runtime resolver matches only
+> `ACTIVE`/`CANARY` (`credentials.service.ts:224,268`). A `STAGING`-only profile
+> `404`s ("No active profile") at the first `/execute/fetch` or
+> `/credentials/request`. Promote it with `noui login promote` (Step 6b) or, to
+> register and promote in one go, pass `--promote`:
+>
+> ```bash
+> .venv/bin/python cli/main.py login register <bundle.json> --promote
+> ```
+>
+> (`login import <session_id> --promote` does the same through the convenience
+> wrapper.) When promoted, the register output shows `Version state : ACTIVE`.
+
+---
+
+## Step 6b — Promote STAGING → ACTIVE (required if you did not pass `--promote`)
+
+```bash
+.venv/bin/python cli/main.py login promote workbench/login_recordings/noui-<session_id8>-bundle.json
+```
+
+Runs the `STAGING → CANARY → ACTIVE` walk (the same sequence `noui tabby setup`
+uses). Skip this only if you already passed `--promote` to `register`/`import` —
+in that case the profile is already `ACTIVE` and `login promote` is a no-op. Until
+the profile is `ACTIVE`, the profile is *not resolvable* and any generated tool
+call returns the actionable "run `tabby session ensure`" error.
+
 ---
 
 ## Step 7 — Set Credentials
@@ -251,6 +279,10 @@ Start
     └─ clean → continue
   │
   Step 6: login register <bundle.json> → note tabby_profile_id
+  │       (add --promote to fold Step 6b in here)
+  │
+  Step 6b: login promote <bundle.json> → STAGING → ACTIVE
+  │        (REQUIRED — runtime resolves only ACTIVE/CANARY; skip if --promote)
   │
   Step 7: login credentials <bundle.json> (user enters username + password)
   │
@@ -275,10 +307,13 @@ Start
 | `.venv/bin/python cli/main.py login export <session_id>` | Analyze session → write bundle JSON |
 | `.venv/bin/python cli/main.py login review <bundle.json>` | Print validation and review items |
 | `.venv/bin/python cli/main.py login register <bundle.json>` | Provision Application + STAGING ServiceProfile in Tabby |
+| `.venv/bin/python cli/main.py login register <bundle.json> --promote` | Register and promote STAGING → ACTIVE in one step |
+| `.venv/bin/python cli/main.py login promote <bundle.json>` | Promote a registered profile STAGING → ACTIVE (required before tool calls) |
 | `.venv/bin/python cli/main.py login credentials <bundle.json>` | Set username/password for a registered profile |
 | `.venv/bin/python cli/main.py login validate <bundle.json>` | Wait for a HEALTHY browser session for the profile |
 | `.venv/bin/python cli/main.py login import <session_id>` | Convenience: export + review + register |
 | `.venv/bin/python cli/main.py login import <session_id> --validate` | Convenience: export + review + register + validate |
+| `.venv/bin/python cli/main.py login import <session_id> --promote` | Convenience: export + review + register + promote |
 | `.venv/bin/python cli/main.py tabby session ensure --profile <id>` | Start or verify a live browser session worker |
 | `.venv/bin/python cli/main.py tabby session status` | Show current browser session state |
 

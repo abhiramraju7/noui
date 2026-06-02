@@ -1089,12 +1089,26 @@ def cmd_login_register(args: argparse.Namespace) -> int:
         print(_red(f"ServiceProfile creation failed: {exc}"))
         return 1
 
+    # Optionally promote STAGING → ACTIVE so the runtime can resolve the profile.
+    # The runtime resolver only matches ACTIVE/CANARY, so a STAGING-only profile
+    # 404s at the first tool call (see gaps.md B1). `--promote` closes that gap
+    # inline; otherwise the profile stays STAGING and `noui login promote` (or
+    # `noui tabby setup`) must run before any tool call.
+    version_state = "STAGING"
+    if getattr(args, "promote", False):
+        print()
+        if _promote_profile_to_active(profile_db_id, admin_token):
+            version_state = "ACTIVE"
+        else:
+            print(_red("Promotion failed — profile left in STAGING."))
+            print(f"  Retry with: {_bold(f'noui login promote {bundle_path}')}")
+
     # Update bundle file with registered IDs
     bundle["_provisioned"] = {
         "app_id": app_id,
         "profile_db_id": profile_db_id,
         "profile_id": profile_id,
-        "version_state": "STAGING",
+        "version_state": version_state,
     }
     bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
 
@@ -1120,10 +1134,72 @@ def cmd_login_register(args: argparse.Namespace) -> int:
     print(f"  Application ID       : {_cyan(app_id)}")
     print(f"  ServiceProfile DB ID : {_cyan(profile_db_id)}")
     print(f"  Tabby profile ID     : {_cyan(profile_id)}")
-    print("  Version state        : STAGING")
+    print(f"  Version state        : {version_state}")
     print()
     print("  Next steps:")
     print(f"    {_bold(f'noui login credentials {bundle_path}')}")
+    if version_state != "ACTIVE":
+        print(
+            f"    {_bold(f'noui login promote {bundle_path}')}"
+            "   (required — runtime resolves only ACTIVE/CANARY)"
+        )
+    return 0
+
+
+def cmd_login_promote(args: argparse.Namespace) -> int:
+    """Promote a registered profile from STAGING to ACTIVE.
+
+    The login happy path (`register → credentials → validate → session ensure`)
+    leaves the profile in STAGING, but the runtime resolver matches only
+    ACTIVE/CANARY — so a tool call 404s until the profile is promoted. This runs
+    the same `STAGING → CANARY → ACTIVE` walk `tabby setup` uses.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+
+    bundle_path = Path(args.bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Bundle file not found: {bundle_path}"))
+        return 1
+
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse bundle: {exc}"))
+        return 1
+
+    provisioned = bundle.get("_provisioned")
+    if not provisioned:
+        print(_red("Bundle has not been registered yet. Run: noui login register"))
+        return 1
+
+    profile_db_id: str = provisioned.get("profile_db_id", "")
+    profile_id: str = provisioned.get("profile_id", profile_db_id)
+    if not profile_db_id:
+        print(_red("No profile_db_id found in bundle — run `noui login register` first"))
+        return 1
+
+    if provisioned.get("version_state") == "ACTIVE":
+        print(_green(f"Profile '{profile_id}' is already ACTIVE — nothing to do."))
+        return 0
+
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    print(f"Promoting profile '{_cyan(profile_id)}' to ACTIVE …")
+    if not _promote_profile_to_active(profile_db_id, admin_token):
+        return 1
+
+    provisioned["version_state"] = "ACTIVE"
+    bundle["_provisioned"] = provisioned
+    bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
+
+    print()
+    print(_green(f"Profile '{profile_id}' is now ACTIVE."))
+    print("  Next: start a browser session:")
+    print(f"    {_bold(f'noui tabby session ensure --profile {profile_id}')}")
     return 0
 
 
@@ -1294,8 +1370,10 @@ def cmd_login_import(args: argparse.Namespace) -> int:
     review_args = argparse.Namespace(bundle_file=str(bundle_path))
     cmd_login_review(review_args)
 
-    # register
-    register_args = argparse.Namespace(bundle_file=str(bundle_path))
+    # register (optionally promote STAGING → ACTIVE inline)
+    register_args = argparse.Namespace(
+        bundle_file=str(bundle_path), promote=getattr(args, "promote", False)
+    )
     rc = cmd_login_register(register_args)
     if rc != 0:
         return rc
@@ -3611,6 +3689,42 @@ def _bypass_canary_gate(profile_db_id: str) -> bool:
         return False
 
 
+def _promote_profile_to_active(profile_db_id: str, admin_token: str) -> bool:
+    """Walk a STAGING ServiceProfile to ACTIVE so the runtime can resolve it.
+
+    `/execute/fetch` and `/credentials/request` resolve only ACTIVE/CANARY
+    profiles (credentials.service.ts:224,268); a freshly-registered profile is
+    left in STAGING and would 404 at the first tool call. This reproduces the
+    exact sequence `tabby setup`'s `_ensure_service_profile` uses:
+    `STAGING → CANARY` promote, a direct Postgres canary-gate bypass, then
+    `CANARY → ACTIVE` promote. Prints progress; returns True on success.
+    """
+    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion failed: {exc}"))
+        return False
+
+    print("  Bypassing canary gate …", end=" ", flush=True)
+    if not _bypass_canary_gate(profile_db_id):
+        return False
+    print(_green("✓"))
+
+    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
+        return False
+
+    return True
+
+
 def _prompt_app_config(profile_id: str) -> dict[str, Any] | None:
     print()
     print(_bold(f"  Configure login for profile '{profile_id}'"))
@@ -3815,30 +3929,7 @@ def _ensure_service_profile(
 
     entry["profile_db_id"] = profile_db_id
 
-    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion failed: {exc}"))
-        return False
-
-    print("  Bypassing canary gate …", end=" ", flush=True)
-    if not _bypass_canary_gate(profile_db_id):
-        return False
-    print(_green("✓"))
-
-    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
-        return False
-
-    return True
+    return _promote_profile_to_active(profile_db_id, admin_token)
 
 
 # ---------------------------------------------------------------------------
@@ -4730,6 +4821,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "register", help="Register bundle with Tabby (needs TABBY_ADMIN_TOKEN)"
     )
     login_register.add_argument("bundle_file", help="Path to bundle JSON file")
+    login_register.add_argument(
+        "--promote",
+        action="store_true",
+        help="Also promote STAGING → ACTIVE so the runtime can resolve the profile",
+    )
+
+    login_promote = login_sub.add_parser(
+        "promote", help="Promote a registered profile STAGING → ACTIVE"
+    )
+    login_promote.add_argument("bundle_file", help="Path to bundle JSON file")
 
     login_validate = login_sub.add_parser(
         "validate", help="Wait for Tabby profile to become HEALTHY"
@@ -4747,6 +4848,9 @@ def _build_parser() -> argparse.ArgumentParser:
     login_import.add_argument("session_id", help="Login session ID")
     login_import.add_argument(
         "--validate", action="store_true", help="Also run validate after register"
+    )
+    login_import.add_argument(
+        "--promote", action="store_true", help="Also promote STAGING → ACTIVE after register"
     )
 
     # --- workflow ---
@@ -5121,7 +5225,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch_login(args: argparse.Namespace) -> int:
     cmd = getattr(args, "login_command", None)
     if cmd is None:
-        print("Usage: noui login {record,list,export,review,register,validate,credentials,import}")
+        print(
+            "Usage: noui login "
+            "{record,list,export,review,register,promote,validate,credentials,import}"
+        )
         return 1
     dispatch = {
         "record": cmd_login_record,
@@ -5129,6 +5236,7 @@ def _dispatch_login(args: argparse.Namespace) -> int:
         "export": cmd_login_export,
         "review": cmd_login_review,
         "register": cmd_login_register,
+        "promote": cmd_login_promote,
         "validate": cmd_login_validate,
         "credentials": cmd_login_credentials,
         "import": cmd_login_import,

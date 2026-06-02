@@ -366,3 +366,179 @@ class TestTabbySetupCloud:
 
         assert rc == 1
         assert not (tmp_path / ".env").exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. Login-flow STAGING → ACTIVE promotion (gaps.md B1)
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteProfileToActive:
+    """`_promote_profile_to_active` runs the STAGING→CANARY→ACTIVE walk."""
+
+    def test_happy_path_issues_two_promotes_and_bypasses_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            calls.append(path)
+            return {}
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+        monkeypatch.setattr(cli_main, "_bypass_canary_gate", lambda _id: True)
+
+        assert cli_main._promote_profile_to_active("db-1", "tok") is True
+        # Two promote calls (STAGING→CANARY, CANARY→ACTIVE).
+        assert calls == ["/admin/profiles/db-1/promote", "/admin/profiles/db-1/promote"]
+
+    def test_canary_gate_failure_aborts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli_main, "_tabby_http", lambda *a, **k: {})
+        monkeypatch.setattr(cli_main, "_bypass_canary_gate", lambda _id: False)
+        assert cli_main._promote_profile_to_active("db-1", "tok") is False
+
+
+class TestLoginPromoteCommand:
+    """`noui login promote` walks a registered profile to ACTIVE."""
+
+    @staticmethod
+    def _bundle(tmp_path: Path, version_state: str = "STAGING") -> Path:
+        bundle = {
+            "_provisioned": {
+                "app_id": "app-1",
+                "profile_db_id": "db-1",
+                "profile_id": "my-app",
+                "version_state": version_state,
+            }
+        }
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        return path
+
+    def test_promotes_and_persists_active_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = self._bundle(tmp_path)
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: True)
+
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 0
+        persisted = json.loads(path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "ACTIVE"
+
+    def test_already_active_is_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = self._bundle(tmp_path, version_state="ACTIVE")
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+
+        def _should_not_call(*_a, **_k):  # pragma: no cover - guards against regressions
+            raise AssertionError("must not promote an already-ACTIVE profile")
+
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", _should_not_call)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 0
+
+    def test_unregistered_bundle_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps({"application_draft": {}}))
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 1
+
+    def test_promotion_failure_keeps_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = self._bundle(tmp_path)
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: False)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 1
+        # State must NOT be flipped to ACTIVE on failure.
+        persisted = json.loads(path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "STAGING"
+
+
+class TestLoginRegisterPromoteFlag:
+    """`noui login register --promote` promotes inline and records ACTIVE."""
+
+    def test_promote_flag_flips_version_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle = {
+            "validation": {"generator_valid": True},
+            "application_draft": {
+                "name": "MyApp",
+                "target_urls": ["https://example.com"],
+                "login_config": {"credential_ref": "k8s:secret/tabby-my-app"},
+            },
+            "service_profile_draft": {"profile_id": "my-app", "version": "0.0.0"},
+        }
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: True)
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            if path == "/apps":
+                return {"app_id": "app-uuid-1111"}
+            if path == "/admin/profiles":
+                return {"id": "db-uuid-2222"}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), promote=True)
+        )
+        assert rc == 0
+        persisted = json.loads(bundle_path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "ACTIVE"
+
+    def test_without_flag_stays_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle = {
+            "validation": {"generator_valid": True},
+            "application_draft": {
+                "name": "MyApp",
+                "target_urls": ["https://example.com"],
+                "login_config": {"credential_ref": "k8s:secret/tabby-my-app"},
+            },
+            "service_profile_draft": {"profile_id": "my-app", "version": "0.0.0"},
+        }
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+
+        def _should_not_promote(*_a, **_k):  # pragma: no cover - regression guard
+            raise AssertionError("register without --promote must not promote")
+
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", _should_not_promote)
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            if path == "/apps":
+                return {"app_id": "app-uuid-1111"}
+            if path == "/admin/profiles":
+                return {"id": "db-uuid-2222"}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), promote=False)
+        )
+        assert rc == 0
+        persisted = json.loads(bundle_path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "STAGING"

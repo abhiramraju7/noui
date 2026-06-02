@@ -74,6 +74,11 @@ class TestGenerate:
         app = result["application_draft"]
         assert "my-cool-app" in app.get("profile_id", "") or "My Cool App" in str(app)
 
+    def test_application_draft_sets_execute_enabled(self) -> None:
+        # A4: execute_enabled must be true or /execute/fetch is dead in K8s.
+        result = generate(_session(), [], [])
+        assert result["application_draft"]["execute_enabled"] is True
+
     def _steps(self, result: dict) -> list[dict]:
         """Steps are in application_draft.login_config.steps."""
         return result["application_draft"]["login_config"]["steps"]

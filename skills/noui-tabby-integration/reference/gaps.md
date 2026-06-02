@@ -30,6 +30,18 @@ A double dead-end: (1) `--cloud` only verifies the token round-trip and writes e
 - **Recommendation:** have `--cloud` emit/upsert an App Template after verifying the round-trip (pairs with A1), and fix the runtime to honor `platform_jwt` (pairs with A2). Until both land, document that `--cloud` is auth-verification-only and the default `tabby` export has no working cloud auth.
 
 ### A4 — `execute_enabled` is never set → defaults `false` `[high · NoUI + Tabby]`
+**Status: NoUI DONE; Tabby DOCUMENTED (needs a Tabby-submodule PR).** NoUI now sets `execute_enabled: true` in all three emit sites — the compiler's `application_draft` (`compiler/login/tabby_draft_generator.py`), `tabby setup`'s `_build_app_payload` (`cli/main.py`), and the A1 template emitter payload (`build_app_template_payload`). `noui tabby session ensure` now calls `_warn_if_execute_disabled(app_id, admin_token)` (best-effort `GET /apps/:id`) and prints a non-fatal warning if the resolved app row has `execute_enabled=false`. Unit-tested for all three payloads + the warning (present-false warns, true/absent quiet, lookup failure is silent).
+
+**Tabby-side change (NOT applied — submodule is read-only here; needs a separate Tabby PR):**
+- `tabby/apps/api/src/entities/app-template.entity.ts` — add a column so templates can carry the flag:
+  ```ts
+  @Column({ type: 'boolean', default: false })
+  execute_enabled: boolean;
+  ```
+  (plus a new TypeORM migration to add `app_templates.execute_enabled`).
+- `tabby/apps/api/src/modules/app-templates/app-templates.controller.ts` `CreateAppTemplateDto` — accept the field (`@IsOptional() @IsBoolean() execute_enabled?: boolean;`) so the emitted payload is persisted rather than dropped by the DTO whitelist.
+- `tabby/apps/api/src/modules/credentials/credentials.service.ts` `autoProvisionFromTemplate` (the `appsService.create({...})` call at ~`:299-311`) — copy `execute_enabled: template.execute_enabled` into the created app, so per-user auto-provisioned apps inherit it (today the create omits it → defaults false → `/execute/fetch` 502s for every federated user). Until this lands, NoUI emits `execute_enabled` on the template payload but Tabby's DTO whitelist will silently drop it, and auto-provisioned apps stay execute-disabled in cloud.
+
 NoUI sets `execute_enabled` nowhere; `autoProvisionFromTemplate` doesn't set it; the template entity has no field for it. In K8s the worker Service and pod `EXECUTE_ENABLED` are gated on it, so `/execute/fetch` `502`s. Works locally only via the `.env.local` `EXECUTE_ENABLED=true` override + `LOCAL_WORKER_URL`.
 - **Evidence:** grep `execute_enabled` in `cli/ compiler/ backend/` → empty; `tabby/.../application.entity.ts:60` (default false, migration 022); `apps/controller/src/reconcile.service.ts:224`, `pod-manager.service.ts:365`; `credentials.service.ts:299-311` (auto-provision omits it).
 - **Recommendation:** set `execute_enabled: true` in the compiler's `application_draft`, `tabby setup`'s `_build_app_payload`, and the template emitter; add `execute_enabled` to `AppTemplateEntity` + `autoProvisionFromTemplate` (Tabby change); add a `session ensure` warning if the app row has it false.

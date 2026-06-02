@@ -544,3 +544,52 @@ class TestLoginRegisterAsTemplate:
         )
         assert rc == 0
         assert "/admin/app-templates" not in paths
+
+
+# ---------------------------------------------------------------------------
+# 7. execute_enabled: true on app payloads + session-ensure warning (A4)
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteEnabled:
+    def test_build_app_payload_sets_execute_enabled(self) -> None:
+        cfg = {
+            "login_url": "https://app.example.com/login",
+            "username": "alice",
+            "email_sel": "#email",
+            "pass_sel": "#pass",
+            "submit_sel": "#submit",
+        }
+        payload = cli_main._build_app_payload("my-app", cfg)
+        assert payload["execute_enabled"] is True
+
+    def test_warn_when_execute_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            cli_main, "_tabby_http", lambda *a, **k: {"id": "app-1", "execute_enabled": False}
+        )
+        cli_main._warn_if_execute_disabled("app-1", "tok")
+        out = capsys.readouterr().out
+        assert "execute_enabled=false" in out
+
+    def test_no_warn_when_execute_enabled(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            cli_main, "_tabby_http", lambda *a, **k: {"id": "app-1", "execute_enabled": True}
+        )
+        cli_main._warn_if_execute_disabled("app-1", "tok")
+        out = capsys.readouterr().out
+        assert "execute_enabled" not in out
+
+    def test_warn_is_best_effort_on_lookup_failure(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A failed app lookup must never break session ensure — no raise, no output.
+        def boom(*_a, **_k):
+            raise RuntimeError("Cannot reach Tabby")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        cli_main._warn_if_execute_disabled("app-1", "tok")  # must not raise
+        assert "execute_enabled" not in capsys.readouterr().out

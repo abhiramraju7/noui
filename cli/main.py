@@ -3740,6 +3740,11 @@ def _build_app_payload(profile_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         },
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
+        # execute_enabled must be true or the K8s worker Service + pod
+        # EXECUTE_ENABLED are never created and /execute/fetch 502s (defaults
+        # false). Locally masked by .env.local EXECUTE_ENABLED + LOCAL_WORKER_URL.
+        # See gaps.md A4.
+        "execute_enabled": True,
     }
 
 
@@ -4486,6 +4491,33 @@ def cmd_tabby_template_create(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _warn_if_execute_disabled(app_id: str, admin_token: str) -> None:
+    """Warn (non-fatally) when the resolved app has execute_enabled=false.
+
+    In real K8s, execute_enabled=false means no worker Service / EXECUTE_ENABLED,
+    so /execute/fetch 502s — the default `tabby` runtime is silently dead. NoUI
+    now sets execute_enabled: true on every app payload (A4), but a pre-existing
+    app (created before this fix, or by another tool) may still have it false.
+    Best-effort: any lookup failure is ignored so session ensure never breaks.
+    """
+    try:
+        app = _tabby_http("GET", f"/apps/{app_id}", token=admin_token)
+    except RuntimeError:
+        return
+    if not isinstance(app, dict):
+        return
+    # Treat a present-and-false value as a real warning; tolerate apps that
+    # simply don't surface the field.
+    if app.get("execute_enabled") is False:
+        print(
+            _yellow(
+                "  ⚠ This app has execute_enabled=false — /execute/fetch will 502 in K8s "
+                "(the default `tabby` runtime is dead). Re-provision with a NoUI version "
+                "that sets execute_enabled: true, or patch the app/template."
+            )
+        )
+
+
 def cmd_session_status(args: argparse.Namespace) -> int:  # noqa: ARG001
     if not _tabby_alive():
         print(_red(f"Tabby API is not running. Run: {_bold('noui tabby start')}"))
@@ -4581,6 +4613,8 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
     if not app_id:
         print(_red(f"No app_id cached for '{profile_id}'. Re-run: noui tabby setup"))
         return 1
+
+    _warn_if_execute_disabled(app_id, admin_token)
 
     try:
         jwt_payload = _decode_jwt_payload(admin_token)

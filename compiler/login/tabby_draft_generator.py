@@ -650,6 +650,11 @@ def generate(
         "export_policy": export_policy,
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
+        # execute_enabled must be true or the K8s worker Service + pod
+        # EXECUTE_ENABLED are never created and /execute/fetch 502s (defaults
+        # false). Locally this is masked by the .env.local EXECUTE_ENABLED
+        # override + LOCAL_WORKER_URL; in real K8s it is load-bearing. See A4.
+        "execute_enabled": True,
     }
 
     # ---- Build ServiceProfile draft ----

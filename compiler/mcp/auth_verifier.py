@@ -69,7 +69,7 @@ class AuthVerifier:
         verifier = AuthVerifier(
             auth_plan=auth_plan,
             server_dir="/path/to/workbench/mcp_servers/example-bank/example-bank-abc12345",
-            tabby_api_host="http://localhost:8080",
+            tabby_api_host="http://localhost:8000",
             tabby_admin_token="admin-token",
         )
         result = await verifier.verify()
@@ -96,7 +96,7 @@ class AuthVerifier:
         self.auth_plan = auth_plan
         self.server_dir = Path(server_dir)
         self.tabby_api_host = (
-            tabby_api_host or os.environ.get("TABBY_API_URL", "") or "http://localhost:8080"
+            tabby_api_host or os.environ.get("TABBY_API_URL", "") or "http://localhost:8000"
         )
         self.tabby_admin_token = tabby_admin_token or os.environ.get("TABBY_ADMIN_TOKEN", "")
         self.tabby_client_id = tabby_client_id or os.environ.get("TABBY_CLIENT_ID", "")

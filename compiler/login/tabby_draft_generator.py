@@ -26,6 +26,28 @@ from typing import Any
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
+# Credential-type shape
+# ---------------------------------------------------------------------------
+
+# Tabby's credentials consumer iterates credential_types.cookies expecting
+# {name, volatility} objects (credentials.service.ts); a plain string array of
+# cookie names yields empty name/value for every cookie. Akamai/CDN tokens
+# rotate per request, so they are marked VOLATILE; everything else is STABLE.
+_VOLATILE_COOKIE_NAMES = frozenset({"bm_sz", "ak_bmsc", "bm_so", "bm_s", "_abck"})
+
+
+def _cookie_credential_types(cookie_names: list[str]) -> list[dict]:
+    """Convert cookie names into Tabby's required ``[{name, volatility}]`` shape."""
+    return [
+        {
+            "name": name,
+            "volatility": "VOLATILE" if name in _VOLATILE_COOKIE_NAMES else "STABLE",
+        }
+        for name in cookie_names
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Selector helpers
 # ---------------------------------------------------------------------------
 
@@ -540,8 +562,10 @@ def generate(
     # ---- Infer credential_types ----
     credential_types: dict[str, list] = {"cookies": [], "headers": []}
     if har_analysis["set_cookie_headers"]:
-        credential_types["cookies"] = har_analysis["set_cookie_headers"]
+        credential_types["cookies"] = _cookie_credential_types(har_analysis["set_cookie_headers"])
     if har_analysis["auth_header_names"]:
+        # Headers are tolerated as plain names by Tabby's consumer (only cookies
+        # require the object shape), so they are left as a name list.
         credential_types["headers"] = har_analysis["auth_header_names"]
 
     # ---- Build Application draft ----
@@ -553,7 +577,6 @@ def generate(
         "export_policy": export_policy,
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
-        "browser_policy": {"streaming_mode": "cdp"},
     }
 
     # ---- Build ServiceProfile draft ----

@@ -3729,7 +3729,6 @@ def _build_app_payload(profile_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         },
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
-        "browser_policy": {"streaming_mode": "cdp"},
     }
 
 

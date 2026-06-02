@@ -81,7 +81,7 @@ class TestResolveTabbyApiHost:
     def test_default_constant_value(self) -> None:
         """Pin the default literal so it can't drift away from
         backend/config.py and .env.example without a deliberate change."""
-        assert DEFAULT_TABBY_API_HOST == "http://localhost:8080"
+        assert DEFAULT_TABBY_API_HOST == "http://localhost:8000"
 
 
 # ---------------------------------------------------------------------------

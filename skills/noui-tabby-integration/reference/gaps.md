@@ -56,36 +56,59 @@ NoUI sets `execute_enabled` nowhere; `autoProvisionFromTemplate` doesn't set it;
 The documented `/noui-record-login` happy path (`register → credentials → validate → session ensure`) never promotes. `/execute/fetch` and `/credentials/request` resolve only `ACTIVE`/`CANARY` → `404 No active profile`. Only `tabby setup` (or a manual promote) advances it.
 - **Evidence:** `cli/main.py:1097` (STAGING), `:1130-1207` (validate polls *session* state only); `credentials.service.ts:224,268`.
 - **Recommendation:** add an explicit promote step to the login path (or document that it stops at STAGING and won't resolve until promoted). Make `/noui-generalize` "Fix B" the standard promotion step, not an edge case.
+- **Status — implemented (NoUI + docs).** The promote sequence (two `POST /admin/profiles/{id}/promote` calls bracketing the `_bypass_canary_gate` Postgres `UPDATE`) was extracted from `_ensure_service_profile` into a reusable `_promote_profile_to_active(profile_db_id, admin_token)` helper. Three affordances now expose it: (1) `noui login register <bundle> --promote` promotes inline and records `version_state: ACTIVE`; (2) a new `noui login promote <bundle>` command promotes a previously-registered profile (no-op if already ACTIVE); (3) `noui login import <session_id> --promote` threads the flag through the convenience wrapper. Plain `register` still stops at STAGING but now prints a `noui login promote` follow-up hint. The `/noui-record-login` skill doc gains a "STAGING trap" warning, a Step 6b, the flow-diagram step, and the new commands in the reference table. Tests: `tests/test_cli_tabby.py::TestPromoteProfileToActive`, `::TestLoginPromoteCommand`, `::TestLoginRegisterPromoteFlag`.
 
 ### B2 — `/execute/*` returns `404` for "no healthy session", but the runtime only special-cases `409` `[high · integration]`
 `findHealthySession` throws `404`; the runtime's `execute_fetch` only maps `409` to the actionable "run `tabby session ensure`" message, so the common no-session case surfaces as an opaque `404`.
 - **Evidence:** `credentials.service.ts:362-363` (404); `execute_adapter.py:168-177` (only 409 special-cased).
 - **Recommendation:** treat `404 No healthy session` like `409` in `execute_adapter.py` — raise the "run `tabby session ensure --profile <slug>`" error.
+- **Status — implemented (NoUI).** `execute_adapter.py` now routes both `409` and `404`-with-a-session-marker (`"no healthy session"` / `"no active profile"` in the body) through a shared `_is_no_session()` helper to the actionable "run `tabby session ensure --profile <slug>`" error. A bare `404` without the marker, and an upstream `404` wrapped in a `200 {status:404}` body, are deliberately *not* misclassified. Tests: `tests/test_execute_adapter.py::TestNoSessionErrors`.
 
 ### B3 — Fresh local installs silently can't run `/execute/fetch` (`EXECUTE_ENABLED`/`LOCAL_WORKER_URL` not guaranteed) `[high · NoUI/Tabby]`
 The worker only mounts `/execute/*` if `EXECUTE_ENABLED==='true'`; the API needs `LOCAL_WORKER_URL` in dev (the K8s DNS name is unresolvable locally). `session ensure` doesn't inject either; `tabby/.env.example` lacks both. A new dev gets a worker with no execute routes and the failure only appears at first tool call.
 - **Evidence:** `apps/worker/src/health-server.ts:33`; `execute.service.ts` (LOCAL_WORKER_URL else K8s DNS); `cli/main.py:4488-4497` (no EXECUTE_ENABLED/LOCAL_WORKER_URL); `tabby/.env.example` (missing both).
 - **Recommendation:** inject `EXECUTE_ENABLED=true` into the spawned worker and assert/inject `LOCAL_WORKER_URL`; add both to `tabby/.env.example`; add an execute-readiness probe to `session ensure`.
+- **Status — NoUI-done + Tabby-documented.** `cmd_session_ensure` now forces `EXECUTE_ENABLED=true` into the spawned worker's subprocess env (so `/execute/*` is always mounted) and seeds `LOCAL_WORKER_URL=http://localhost:8091` into that env. Because the *API* (not this worker) is the process that reads `LOCAL_WORKER_URL` and it was started separately by `noui tabby start`, `session ensure` cannot set it on the live API process — so it warns loudly when `LOCAL_WORKER_URL` is absent from both `os.environ` and `tabby/.env.local`, pointing the user to add it and restart. Paired with the B4 readiness probe.
+  - **Tabby half (document-only, needs submodule PR):** add to `tabby/.env.example` (pinned submodule — do not edit from this branch):
+    ```
+    # Enables the worker's /execute/* HTTP routes (health-server.ts gate).
+    EXECUTE_ENABLED=true
+    # Dev-only: where the API reaches the per-session worker. In K8s this is the
+    # service DNS name; locally that name is unresolvable so set it explicitly.
+    LOCAL_WORKER_URL=http://localhost:8091
+    ```
 
 ### B4 — `session ensure` reports HEALTHY by probing CDP `:9222`, not the execute server `:8091` `[high · NoUI]`
 The readiness check validates the wrong surface — a session can be "✓ HEALTHY" with no `/execute/fetch` route mounted.
 - **Evidence:** `cli/main.py:4468-4479` (state + PID + `_cdp_is_reachable` on `:9222`); `health-server.ts:33` (execute routes independent of CDP).
 - **Recommendation:** after HEALTHY, probe a trivial `/execute/fetch` (or the worker `:8091`) and distinguish ":9222 CDP" from ":8091 execute" in status output.
+- **Status — implemented (NoUI).** Added `_probe_execute_ready(profile_id, admin_token)` — a trivial `POST /execute/fetch` (to `https://example.com/`, 5 s) classified into `ready` / `no-route` (404 marker, bare 404 ⇒ routes not mounted, 502/504 ⇒ worker unreachable) / `unknown` (probe itself couldn't run). `_report_execute_readiness` prints separate `CDP :9222` and `Execute :8091` status lines and warns when execute is not ready. Both `session ensure` success paths (already-HEALTHY early return and the fresh-start path) call it. The probe never raises — a probe failure degrades to a warning and never crashes `session ensure` (guardrail). Tests: `tests/test_cli_tabby.py::TestProbeExecuteReady`, `::TestReportExecuteReadiness`.
 
 ### B5 — `/execute/*` doesn't rescale idle-shutdown apps or refresh the idle timer `[medium · integration]`
 `/credentials/request` rescales an idle app to 1 on "no healthy session" and updates `last_credential_request_at`; `/execute/*` does neither. An execute-only tool never refreshes the idle timer → the app idle-shuts → next call `404`s with no auto-recovery.
 - **Evidence:** `credentials.service.ts:130-141,144` vs `execute.service.ts:69-79`.
 - **Recommendation:** mirror the rescale-on-404 logic in execute (Tabby), and/or on the NoUI side fall back to one `/credentials/request` to warm the session, then retry execute.
+- **Status — NoUI-done + Tabby-documented.** NoUI half: `execute_adapter.py` now supports an **opt-in** one-shot warm-up. Set `NOUI_EXECUTE_WARMUP=1` and, on a no-session 404/409, the runtime issues exactly one `POST /credentials/request` (which rescales an idle-shut app to 1 and triggers `autoProvisionFromTemplate`) then retries `/execute/fetch` **once** — no loops. A failed warm-up (5xx, or any transport error) does not retry and never masks the actionable B2 error. Off by default so the common path keeps its single-request latency. Tests: `tests/test_execute_adapter.py::TestWarmUpRetry`.
+  - **Tabby half (document-only, needs submodule PR):** mirror the rescale-on-no-healthy-session logic from `apps/api/src/credentials/credentials.service.ts` (the rescale-to-1 + `last_credential_request_at` update at ~`:130-141,144`) into `apps/api/src/execute/execute.service.ts` `executeFetch` (~`:69-79`), so `/execute/*` itself refreshes the idle timer and recovers an idle-shut app without needing the NoUI-side warm-up. This is the durable fix; the NoUI warm-up is the client-side stopgap.
 
 ### B6 — `HEALTHY` ≠ authenticated/extracted `[medium · integration]`
 HEALTHY only means the keepalive passed. A missing artifact bundle yields **silently empty** credentials on the credentials path; on the execute path an unfinished login lets `fetch(credentials:'include')` run unauthenticated and return the target's 401/403 as a 200-wrapped body.
 - **Evidence:** `credentials.service.ts:178-192` (null bundle → empty, no throw); `execute-handler.ts:60` (live-jar dependency); Tabby gotchas #9/#10/#16.
 - **Recommendation:** document HEALTHY≠authenticated; pre-warm with `session ensure --open <auth-url>` and verify a known authenticated request before trusting output.
+- **Status — docs-only (implemented).** Concise "HEALTHY ≠ authenticated" warnings added to `/noui-record-login` (Step 9, after the session-ensure output) and `/noui-record-workflow` (prerequisite block): both explain the 401/403-wrapped-as-200 failure, instruct to pre-warm with `tabby session ensure --profile <slug> --open <auth-url>` (or `--skill <id>`), and to verify one known-authenticated request before trusting output. The deeper detail already lives in `/noui-tabby-integration` (concepts/execute-and-runtime). No code change (per the gap's recommendation).
 
 ### B7 — `findHealthySession` is non-deterministic with duplicate HEALTHY rows `[medium · Tabby]`
 `findOne(... HEALTHY ...)` has no `ORDER BY`; if reconciliation left two HEALTHY rows, the chosen `pod_name` is arbitrary and may point at a gone pod → `502`.
 - **Evidence:** `credentials.service.ts:347-361` (no order).
 - **Recommendation:** add `ORDER BY updated_at DESC`, prefer a non-null recently-heartbeated `pod_name`.
+- **Status — document-only (Tabby submodule; needs a separate Tabby PR).** Verified against the live submodule: `apps/api/src/modules/credentials/credentials.service.ts` `findHealthySession` (≈`:347-366`) builds `where = { tenant_id, state: 'HEALTHY', app_id?, owner_user_id? }` and calls `this.sessionRepo.findOne({ where })` with **no `order`** — so with duplicate HEALTHY rows (a reconciliation race) the returned row, and thus `pod_name`, is arbitrary and can point at a terminated pod → `502` on execute/credentials. **Required change (Tabby-side, do NOT edit from this branch):** pass an ordering to `findOne`, preferring the freshest heartbeat and a live worker, e.g.:
+  ```ts
+  const session = await this.sessionRepo.findOne({
+    where,
+    order: { updated_at: 'DESC' },   // newest heartbeat first
+  });
+  ```
+  Ideally also bias toward a non-null `pod_name` (e.g. a query-builder `ORDER BY pod_name IS NULL ASC, updated_at DESC`) so a row with an assigned worker wins over a pod-less one. No NoUI-side half — this is purely a Tabby resolver determinism fix. The NoUI B5 warm-up retry mitigates the *symptom* (a stale-pod 502/404 can be retried after a warm-up) but does not fix the non-determinism.
 
 ---
 

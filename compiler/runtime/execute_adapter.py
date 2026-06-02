@@ -246,6 +246,53 @@ async def _get_tabby_bearer() -> str:
         return token
 
 
+def _is_no_session(resp: httpx.Response) -> bool:
+    """True when the execute response means "there is no live session to run in".
+
+    Both 409 (session has no pod_name) and 404 (no ACTIVE/CANARY profile, or no
+    HEALTHY session for the app) mean "there is no live session". 404 is in fact
+    the *more common* case (a cold/never-started profile). Tabby phrases the 404
+    body as "No healthy session" / "No active profile" (credentials.service.ts) —
+    match on either so we don't mistake an upstream 404 from the target site
+    (which arrives wrapped in a 200 {status: 404} body) for a Tabby session gap.
+    """
+    if resp.status_code == 409:
+        return True
+    if resp.status_code == 404:
+        text = resp.text.lower()
+        return "no healthy session" in text or "no active profile" in text
+    return False
+
+
+async def _warm_up_session(profile_id: str, token: str) -> bool:
+    """Best-effort single warm-up to recover a cold/idle-shut profile.
+
+    `/execute/*` does not rescale an idle-shut app or trigger auto-provisioning;
+    `/credentials/request` does both (it catches "no healthy session", re-scales
+    the idle app to 1, and triggers autoProvisionFromTemplate). We issue exactly
+    one such request to nudge Tabby into bringing a session up, then let the
+    caller retry execute once. No polling, no loops — if the session is not ready
+    on the single retry, the normal actionable error surfaces.
+
+    Returns True if the warm-up request was accepted (so a retry is worthwhile),
+    False otherwise. Never raises: a failed warm-up must not mask the original
+    execute error.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{_tabby_api_host()}/credentials/request",
+                json={"profile_id": profile_id},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+    except (httpx.HTTPError, OSError):
+        return False
+    # 2xx (creds returned) or 202/409 (rescale kicked off, not ready yet) all
+    # indicate the warm-up reached Tabby and a retry may now succeed.
+    return resp.status_code < 500
+
+
 async def execute_fetch(
     profile_id: str,
     url: str,
@@ -271,6 +318,11 @@ async def execute_fetch(
 
     Returns:
         Parsed JSON body on 2xx; raises RuntimeError on non-2xx or errors.
+
+    Set NOUI_EXECUTE_WARMUP=1 to opt into a single warm-up retry: on a
+    "no healthy session" 404/409 the runtime issues one POST /credentials/request
+    (which rescales an idle-shut app and triggers auto-provisioning) and retries
+    execute exactly once before surfacing the actionable error.
     """
     token = await _get_tabby_bearer()
 
@@ -285,17 +337,26 @@ async def execute_fetch(
     if body is not None:
         request_body["body"] = json.dumps(body) if not isinstance(body, str) else body
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{_tabby_api_host()}/execute/fetch",
-            json=request_body,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=timeout_ms / 1000 + 5,
-        )
+    async def _post_execute() -> httpx.Response:
+        async with httpx.AsyncClient() as client:
+            return await client.post(
+                f"{_tabby_api_host()}/execute/fetch",
+                json=request_body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=timeout_ms / 1000 + 5,
+            )
+
+    resp = await _post_execute()
+
+    # B5: optional one-shot warm-up retry for a cold/idle-shut profile. Gated on
+    # an opt-in env var so the default path keeps its single-request latency.
+    warmup_enabled = os.environ.get("NOUI_EXECUTE_WARMUP", "").lower() in ("1", "true", "yes")
+    if warmup_enabled and _is_no_session(resp) and await _warm_up_session(profile_id, token):
+        resp = await _post_execute()
 
     if resp.status_code == 429:
         raise RuntimeError(f"Rate limited by Tabby API: {resp.text}")
-    if resp.status_code == 409:
+    if _is_no_session(resp):
         raise RuntimeError(
             f"No healthy Tabby session for profile \\"{profile_id}\\". "
             "Run `tabby session ensure --profile <slug>` or check the admin UI."

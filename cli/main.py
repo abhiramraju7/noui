@@ -191,6 +191,83 @@ def _cdp_is_reachable(host: str = "localhost", port: int = 9222, timeout: float 
         return False
 
 
+def _probe_execute_ready(profile_id: str, admin_token: str) -> tuple[str, str]:
+    """Probe whether /execute/fetch actually works for ``profile_id``.
+
+    A session can be DB-HEALTHY with a live worker on CDP :9222 yet have *no*
+    /execute/* routes mounted (the worker only mounts them when
+    EXECUTE_ENABLED==='true', :8091) or no LOCAL_WORKER_URL for the API to route
+    through. The CDP reachability check (:9222) does not prove either, so this
+    issues a trivial harmless POST /execute/fetch and classifies the result.
+
+    Returns ``(state, detail)`` where ``state`` is one of:
+      - ``"ready"``       — the execute path resolved a session and ran the fetch
+                            (any wrapped target status counts; the route works).
+      - ``"no-route"``    — 404 with a "no healthy session"/"no active profile"
+                            marker, or a 404/502 that indicates the execute route
+                            isn't mounted / worker unreachable.
+      - ``"unknown"``     — the probe itself could not run (API unreachable, auth
+                            error, unexpected status); caller should warn, not fail.
+
+    Never raises — execute readiness is advisory; a probe failure must not crash
+    ``session ensure``.
+    """
+    try:
+        resp = _tabby_http(
+            "POST",
+            "/execute/fetch",
+            {
+                "profile_id": profile_id,
+                "url": "https://example.com/",
+                "method": "GET",
+                "timeout_ms": 5000,
+            },
+            token=admin_token,
+            timeout=12,
+        )
+        # A dict response means the API routed to the worker and got {status,...}
+        # back — the execute path is live regardless of the wrapped target status.
+        return ("ready", f"execute/fetch routed (worker responded: {type(resp).__name__})")
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "http 404" in msg and ("no healthy session" in msg or "no active profile" in msg):
+            # The route exists but the resolver found no live session — usually a
+            # transient gap right after promotion; treat as not-ready, actionable.
+            return ("no-route", "no resolvable session for execute (route reachable)")
+        if "http 404" in msg:
+            return ("no-route", "/execute/fetch returned 404 — execute routes not mounted")
+        if "http 502" in msg or "http 504" in msg:
+            return ("no-route", "worker unreachable on :8091 (502/504) — check LOCAL_WORKER_URL")
+        return ("unknown", f"probe could not run: {exc}")
+
+
+def _report_execute_readiness(profile_id: str, admin_token: str) -> None:
+    """Probe and report execute readiness, distinguishing CDP from execute.
+
+    Advisory only: prints a status line for the CDP surface (:9222) and the
+    execute surface (:8091) so a "✓ HEALTHY" session that can't actually serve
+    /execute/fetch is visible *now*, not at the first tool call (gaps.md B4).
+    Never raises.
+    """
+    cdp_ok = _cdp_is_reachable()
+    print(f"  CDP :9222     : {_green('reachable') if cdp_ok else _yellow('unreachable')}")
+
+    state, detail = _probe_execute_ready(profile_id, admin_token)
+    if state == "ready":
+        print(f"  Execute :8091 : {_green('ready')}  ({detail})")
+    elif state == "no-route":
+        print(f"  Execute :8091 : {_red('NOT ready')}  ({detail})")
+        print(
+            _yellow(
+                "  ⚠ The session is HEALTHY but /execute/fetch is not serving. Ensure the "
+                "worker has EXECUTE_ENABLED=true and the API has LOCAL_WORKER_URL set "
+                "(both handled by re-running `noui tabby session ensure`), then retry."
+            )
+        )
+    else:
+        print(f"  Execute :8091 : {_yellow('unknown')}  ({detail})")
+
+
 def _tabby_worker_build_state() -> tuple[str, str]:
     """Report the freshness of the Tabby worker's compiled output.
 
@@ -1089,12 +1166,26 @@ def cmd_login_register(args: argparse.Namespace) -> int:
         print(_red(f"ServiceProfile creation failed: {exc}"))
         return 1
 
+    # Optionally promote STAGING → ACTIVE so the runtime can resolve the profile.
+    # The runtime resolver only matches ACTIVE/CANARY, so a STAGING-only profile
+    # 404s at the first tool call (see gaps.md B1). `--promote` closes that gap
+    # inline; otherwise the profile stays STAGING and `noui login promote` (or
+    # `noui tabby setup`) must run before any tool call.
+    version_state = "STAGING"
+    if getattr(args, "promote", False):
+        print()
+        if _promote_profile_to_active(profile_db_id, admin_token):
+            version_state = "ACTIVE"
+        else:
+            print(_red("Promotion failed — profile left in STAGING."))
+            print(f"  Retry with: {_bold(f'noui login promote {bundle_path}')}")
+
     # Update bundle file with registered IDs
     bundle["_provisioned"] = {
         "app_id": app_id,
         "profile_db_id": profile_db_id,
         "profile_id": profile_id,
-        "version_state": "STAGING",
+        "version_state": version_state,
     }
     bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
 
@@ -1120,7 +1211,7 @@ def cmd_login_register(args: argparse.Namespace) -> int:
     print(f"  Application ID       : {_cyan(app_id)}")
     print(f"  ServiceProfile DB ID : {_cyan(profile_db_id)}")
     print(f"  Tabby profile ID     : {_cyan(profile_id)}")
-    print("  Version state        : STAGING")
+    print(f"  Version state        : {version_state}")
 
     # Optionally also emit a tenant-wide App Template so federated users can
     # auto-provision their own profile from this same config (A1).
@@ -1131,10 +1222,71 @@ def cmd_login_register(args: argparse.Namespace) -> int:
             bundle["_provisioned"]["template_id"] = tmpl.get("id", "")
             bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
             print(_green(f"  App Template ID      : {tmpl.get('id', '?')}"))
-
     print()
     print("  Next steps:")
     print(f"    {_bold(f'noui login credentials {bundle_path}')}")
+    if version_state != "ACTIVE":
+        print(
+            f"    {_bold(f'noui login promote {bundle_path}')}"
+            "   (required — runtime resolves only ACTIVE/CANARY)"
+        )
+    return 0
+
+
+def cmd_login_promote(args: argparse.Namespace) -> int:
+    """Promote a registered profile from STAGING to ACTIVE.
+
+    The login happy path (`register → credentials → validate → session ensure`)
+    leaves the profile in STAGING, but the runtime resolver matches only
+    ACTIVE/CANARY — so a tool call 404s until the profile is promoted. This runs
+    the same `STAGING → CANARY → ACTIVE` walk `tabby setup` uses.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+
+    bundle_path = Path(args.bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Bundle file not found: {bundle_path}"))
+        return 1
+
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse bundle: {exc}"))
+        return 1
+
+    provisioned = bundle.get("_provisioned")
+    if not provisioned:
+        print(_red("Bundle has not been registered yet. Run: noui login register"))
+        return 1
+
+    profile_db_id: str = provisioned.get("profile_db_id", "")
+    profile_id: str = provisioned.get("profile_id", profile_db_id)
+    if not profile_db_id:
+        print(_red("No profile_db_id found in bundle — run `noui login register` first"))
+        return 1
+
+    if provisioned.get("version_state") == "ACTIVE":
+        print(_green(f"Profile '{profile_id}' is already ACTIVE — nothing to do."))
+        return 0
+
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    print(f"Promoting profile '{_cyan(profile_id)}' to ACTIVE …")
+    if not _promote_profile_to_active(profile_db_id, admin_token):
+        return 1
+
+    provisioned["version_state"] = "ACTIVE"
+    bundle["_provisioned"] = provisioned
+    bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
+
+    print()
+    print(_green(f"Profile '{profile_id}' is now ACTIVE."))
+    print("  Next: start a browser session:")
+    print(f"    {_bold(f'noui tabby session ensure --profile {profile_id}')}")
     return 0
 
 
@@ -1305,8 +1457,10 @@ def cmd_login_import(args: argparse.Namespace) -> int:
     review_args = argparse.Namespace(bundle_file=str(bundle_path))
     cmd_login_review(review_args)
 
-    # register
-    register_args = argparse.Namespace(bundle_file=str(bundle_path))
+    # register (optionally promote STAGING → ACTIVE inline)
+    register_args = argparse.Namespace(
+        bundle_file=str(bundle_path), promote=getattr(args, "promote", False)
+    )
     rc = cmd_login_register(register_args)
     if rc != 0:
         return rc
@@ -3622,6 +3776,42 @@ def _bypass_canary_gate(profile_db_id: str) -> bool:
         return False
 
 
+def _promote_profile_to_active(profile_db_id: str, admin_token: str) -> bool:
+    """Walk a STAGING ServiceProfile to ACTIVE so the runtime can resolve it.
+
+    `/execute/fetch` and `/credentials/request` resolve only ACTIVE/CANARY
+    profiles (credentials.service.ts:224,268); a freshly-registered profile is
+    left in STAGING and would 404 at the first tool call. This reproduces the
+    exact sequence `tabby setup`'s `_ensure_service_profile` uses:
+    `STAGING → CANARY` promote, a direct Postgres canary-gate bypass, then
+    `CANARY → ACTIVE` promote. Prints progress; returns True on success.
+    """
+    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion failed: {exc}"))
+        return False
+
+    print("  Bypassing canary gate …", end=" ", flush=True)
+    if not _bypass_canary_gate(profile_db_id):
+        return False
+    print(_green("✓"))
+
+    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
+        return False
+
+    return True
+
+
 def _prompt_app_config(profile_id: str) -> dict[str, Any] | None:
     print()
     print(_bold(f"  Configure login for profile '{profile_id}'"))
@@ -3831,30 +4021,7 @@ def _ensure_service_profile(
 
     entry["profile_db_id"] = profile_db_id
 
-    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion failed: {exc}"))
-        return False
-
-    print("  Bypassing canary gate …", end=" ", flush=True)
-    if not _bypass_canary_gate(profile_db_id):
-        return False
-    print(_green("✓"))
-
-    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
-        return False
-
-    return True
+    return _promote_profile_to_active(profile_db_id, admin_token)
 
 
 # ---------------------------------------------------------------------------
@@ -4705,6 +4872,8 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
         pid = _read_pid(TABBY_WORKER_PID_FILE)
         if pid and _pid_running(pid) and _cdp_is_reachable():
             print(_green(f"✓ Session for '{profile_id}' is already HEALTHY"))
+            # B4: HEALTHY + CDP-reachable still doesn't prove /execute/fetch works.
+            _report_execute_readiness(profile_id, admin_token)
             # Still honor --open / --skill against the existing session.
             _maybe_navigate_from_args(args)
             return 0
@@ -4728,8 +4897,31 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
             "APP_ID": app_id,
             "TENANT_ID": tenant_id,
             "STREAMING_MODE": "cdp",
+            # B3: the worker only mounts /execute/* when EXECUTE_ENABLED==='true'
+            # (apps/worker/src/health-server.ts:33). On a fresh local install
+            # tabby/.env.local may lack it, leaving the session "✓ HEALTHY" with
+            # no execute routes — the failure only surfaces at the first tool call.
+            # Force it on for the spawned worker so /execute/fetch is always served.
+            "EXECUTE_ENABLED": "true",
         }
     )
+    # B3: the Tabby *API* (not this worker) needs LOCAL_WORKER_URL to reach the
+    # worker in dev — the K8s service DNS name is unresolvable locally
+    # (execute.service.ts: LOCAL_WORKER_URL else K8s DNS). We can't set it on the
+    # already-running API process from here, so warn loudly if it's absent from
+    # the environment the API was started with, and seed a sane default into the
+    # worker env so a co-located check has something to read.
+    env.setdefault("LOCAL_WORKER_URL", "http://localhost:8091")
+    if not os.environ.get("LOCAL_WORKER_URL") and "LOCAL_WORKER_URL" not in _load_env_local():
+        print(
+            _yellow(
+                "  ⚠ LOCAL_WORKER_URL is not set for the Tabby API. In local dev the API "
+                "reaches the worker via LOCAL_WORKER_URL (default http://localhost:8091); "
+                "without it /execute/fetch will fail to route. Add "
+                "LOCAL_WORKER_URL=http://localhost:8091 to tabby/.env.local and restart "
+                "`noui tabby start`."
+            )
+        )
 
     creds_mount = Path("/tmp/tabby-local-secrets")
     secret_name = entry.get("credential_ref", "k8s:secret/no-auth").replace("k8s:secret/", "")
@@ -4872,6 +5064,10 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
 
     print(_green(f"✓ Session for '{profile_id}' is HEALTHY"))
 
+    # B4: prove /execute/fetch is actually served (:8091, EXECUTE_ENABLED), not
+    # just that CDP (:9222) is reachable.
+    _report_execute_readiness(profile_id, admin_token)
+
     _maybe_navigate_from_args(args)
 
     print()
@@ -4992,6 +5188,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "federated users auto-provision their own profile from this config"
         ),
     )
+    login_register.add_argument(
+        "--promote",
+        action="store_true",
+        help="Also promote STAGING → ACTIVE so the runtime can resolve the profile",
+    )
+
+    login_promote = login_sub.add_parser(
+        "promote", help="Promote a registered profile STAGING → ACTIVE"
+    )
+    login_promote.add_argument("bundle_file", help="Path to bundle JSON file")
 
     login_validate = login_sub.add_parser(
         "validate", help="Wait for Tabby profile to become HEALTHY"
@@ -5009,6 +5215,9 @@ def _build_parser() -> argparse.ArgumentParser:
     login_import.add_argument("session_id", help="Login session ID")
     login_import.add_argument(
         "--validate", action="store_true", help="Also run validate after register"
+    )
+    login_import.add_argument(
+        "--promote", action="store_true", help="Also promote STAGING → ACTIVE after register"
     )
 
     # --- workflow ---
@@ -5407,7 +5616,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch_login(args: argparse.Namespace) -> int:
     cmd = getattr(args, "login_command", None)
     if cmd is None:
-        print("Usage: noui login {record,list,export,review,register,validate,credentials,import}")
+        print(
+            "Usage: noui login "
+            "{record,list,export,review,register,promote,validate,credentials,import}"
+        )
         return 1
     dispatch = {
         "record": cmd_login_record,
@@ -5415,6 +5627,7 @@ def _dispatch_login(args: argparse.Namespace) -> int:
         "export": cmd_login_export,
         "review": cmd_login_review,
         "register": cmd_login_register,
+        "promote": cmd_login_promote,
         "validate": cmd_login_validate,
         "credentials": cmd_login_credentials,
         "import": cmd_login_import,

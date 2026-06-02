@@ -676,3 +676,255 @@ class TestExecuteEnabled:
         monkeypatch.setattr(cli_main, "_tabby_http", boom)
         cli_main._warn_if_execute_disabled("app-1", "tok")  # must not raise
         assert "execute_enabled" not in capsys.readouterr().out
+
+
+class TestPromoteProfileToActive:
+    """`_promote_profile_to_active` runs the STAGING→CANARY→ACTIVE walk."""
+
+    def test_happy_path_issues_two_promotes_and_bypasses_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            calls.append(path)
+            return {}
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+        monkeypatch.setattr(cli_main, "_bypass_canary_gate", lambda _id: True)
+
+        assert cli_main._promote_profile_to_active("db-1", "tok") is True
+        # Two promote calls (STAGING→CANARY, CANARY→ACTIVE).
+        assert calls == ["/admin/profiles/db-1/promote", "/admin/profiles/db-1/promote"]
+
+    def test_canary_gate_failure_aborts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli_main, "_tabby_http", lambda *a, **k: {})
+        monkeypatch.setattr(cli_main, "_bypass_canary_gate", lambda _id: False)
+        assert cli_main._promote_profile_to_active("db-1", "tok") is False
+
+
+class TestLoginPromoteCommand:
+    """`noui login promote` walks a registered profile to ACTIVE."""
+
+    @staticmethod
+    def _bundle(tmp_path: Path, version_state: str = "STAGING") -> Path:
+        bundle = {
+            "_provisioned": {
+                "app_id": "app-1",
+                "profile_db_id": "db-1",
+                "profile_id": "my-app",
+                "version_state": version_state,
+            }
+        }
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        return path
+
+    def test_promotes_and_persists_active_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = self._bundle(tmp_path)
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: True)
+
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 0
+        persisted = json.loads(path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "ACTIVE"
+
+    def test_already_active_is_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = self._bundle(tmp_path, version_state="ACTIVE")
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+
+        def _should_not_call(*_a, **_k):  # pragma: no cover - guards against regressions
+            raise AssertionError("must not promote an already-ACTIVE profile")
+
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", _should_not_call)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 0
+
+    def test_unregistered_bundle_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps({"application_draft": {}}))
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 1
+
+    def test_promotion_failure_keeps_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = self._bundle(tmp_path)
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: False)
+        rc = cli_main.cmd_login_promote(SimpleNamespace(bundle_file=str(path)))
+        assert rc == 1
+        # State must NOT be flipped to ACTIVE on failure.
+        persisted = json.loads(path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "STAGING"
+
+
+class TestLoginRegisterPromoteFlag:
+    """`noui login register --promote` promotes inline and records ACTIVE."""
+
+    def test_promote_flag_flips_version_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle = {
+            "validation": {"generator_valid": True},
+            "application_draft": {
+                "name": "MyApp",
+                "target_urls": ["https://example.com"],
+                "login_config": {"credential_ref": "k8s:secret/tabby-my-app"},
+            },
+            "service_profile_draft": {"profile_id": "my-app", "version": "0.0.0"},
+        }
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", lambda _db, _tok: True)
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            if path == "/apps":
+                return {"app_id": "app-uuid-1111"}
+            if path == "/admin/profiles":
+                return {"id": "db-uuid-2222"}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), promote=True)
+        )
+        assert rc == 0
+        persisted = json.loads(bundle_path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "ACTIVE"
+
+    def test_without_flag_stays_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle = {
+            "validation": {"generator_valid": True},
+            "application_draft": {
+                "name": "MyApp",
+                "target_urls": ["https://example.com"],
+                "login_config": {"credential_ref": "k8s:secret/tabby-my-app"},
+            },
+            "service_profile_draft": {"profile_id": "my-app", "version": "0.0.0"},
+        }
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+
+        def _should_not_promote(*_a, **_k):  # pragma: no cover - regression guard
+            raise AssertionError("register without --promote must not promote")
+
+        monkeypatch.setattr(cli_main, "_promote_profile_to_active", _should_not_promote)
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            if path == "/apps":
+                return {"app_id": "app-uuid-1111"}
+            if path == "/admin/profiles":
+                return {"id": "db-uuid-2222"}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), promote=False)
+        )
+        assert rc == 0
+        persisted = json.loads(bundle_path.read_text())
+        assert persisted["_provisioned"]["version_state"] == "STAGING"
+
+
+# ---------------------------------------------------------------------------
+# 7. Execute-readiness probe (gaps.md B4) — :9222 CDP vs :8091 execute
+# ---------------------------------------------------------------------------
+
+
+class TestProbeExecuteReady:
+    """`_probe_execute_ready` classifies whether /execute/fetch actually works."""
+
+    def test_dict_response_is_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli_main, "_tabby_http", lambda *a, **k: {"status": 200, "body": "ok"})
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "ready"
+
+    def test_no_healthy_session_404_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError(
+                'HTTP 404 from POST /execute/fetch: {"message":"No healthy session"}'
+            )
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+
+    def test_plain_404_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError('HTTP 404 from POST /execute/fetch: {"message":"Cannot POST"}')
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, detail = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+        assert "not mounted" in detail
+
+    def test_502_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError("HTTP 502 from POST /execute/fetch: worker unreachable")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, detail = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+        assert "LOCAL_WORKER_URL" in detail
+
+    def test_unreachable_api_is_unknown_not_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError("Cannot reach Tabby at http://localhost:8000 (Connection refused).")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "unknown"
+
+
+class TestReportExecuteReadiness:
+    """`_report_execute_readiness` prints distinct CDP (:9222) and execute (:8091) lines."""
+
+    def test_warns_when_execute_not_ready(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli_main, "_cdp_is_reachable", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cli_main,
+            "_probe_execute_ready",
+            lambda _p, _t: ("no-route", "/execute/fetch returned 404 — execute routes not mounted"),
+        )
+        cli_main._report_execute_readiness("my-app", "tok")
+        out = capsys.readouterr().out
+        assert "CDP :9222" in out
+        assert "Execute :8091" in out
+        assert "NOT ready" in out
+        assert "EXECUTE_ENABLED=true" in out
+
+    def test_reports_ready(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli_main, "_cdp_is_reachable", lambda *a, **k: True)
+        monkeypatch.setattr(cli_main, "_probe_execute_ready", lambda _p, _t: ("ready", "routed"))
+        cli_main._report_execute_readiness("my-app", "tok")
+        out = capsys.readouterr().out
+        assert "Execute :8091" in out
+        assert "ready" in out
+        assert "NOT ready" not in out

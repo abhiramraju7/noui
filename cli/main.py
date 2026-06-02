@@ -4735,6 +4735,230 @@ def cmd_tabby_template_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _list_app_templates(admin_token: str) -> list[dict[str, Any]]:
+    """Return all App Templates for the caller's tenant (empty list on error)."""
+    try:
+        resp = _tabby_http("GET", "/admin/app-templates", token=admin_token)
+    except RuntimeError:
+        return []
+    if isinstance(resp, list):
+        return [t for t in resp if isinstance(t, dict)]
+    if isinstance(resp, dict):
+        return [t for t in resp.get("data", []) if isinstance(t, dict)]
+    return []
+
+
+def _find_profiles_by_id(profile_id: str, admin_token: str) -> list[dict[str, Any]]:
+    """Return every ServiceProfile whose profile_id matches (any owner / state)."""
+    # NB: GET /admin/profiles takes no query params — `?limit=` 400s. (The older
+    # _find_active_profile helper still passes ?limit=200 and silently gets None.)
+    try:
+        resp = _tabby_http("GET", "/admin/profiles", token=admin_token)
+    except RuntimeError:
+        return []
+    profiles = (
+        resp.get("data", []) if isinstance(resp, dict) else list(resp) if isinstance(resp, list) else []
+    )
+    return [p for p in profiles if isinstance(p, dict) and p.get("profile_id") == profile_id]
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """True if s has canonical UUID shape (8-4-4-4-12 hex). Avoids an `re` import."""
+    parts = s.split("-")
+    if len(parts) != 5 or [len(p) for p in parts] != [8, 4, 4, 4, 12]:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for p in parts for c in p)
+
+
+def cmd_tabby_template_list(args: argparse.Namespace) -> int:
+    """List the tenant's App Templates."""
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    templates = _list_app_templates(admin_token)
+    if not templates:
+        print("No App Templates found.")
+        print(f"  Create one with: {_bold('noui login register <bundle> --as-template')}")
+        return 0
+
+    print(_bold("App Templates:"))
+    print()
+    print(f"  {'ID':36}  {'PATTERN':24}  {'EXEC':4}  NAME")
+    print(f"  {'-' * 36}  {'-' * 24}  {'-' * 4}  {'-' * 20}")
+    for t in templates:
+        exec_flag = "yes" if t.get("execute_enabled") else "no"
+        print(
+            f"  {str(t.get('id', '?')):36}  "
+            f"{str(t.get('profile_name_pattern', '?')):24}  "
+            f"{exec_flag:4}  {t.get('name', '?')}"
+        )
+    print()
+    print(f"  Inspect one with: {_bold('noui tabby template show <id|pattern>')}")
+    return 0
+
+
+def cmd_tabby_template_show(args: argparse.Namespace) -> int:
+    """Show a single App Template, resolved by template id or profile_name_pattern."""
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    ref: str = args.template
+    tmpl: dict[str, Any] | None = None
+    if _looks_like_uuid(ref):
+        try:
+            resp = _tabby_http("GET", f"/admin/app-templates/{ref}", token=admin_token)
+            tmpl = resp if isinstance(resp, dict) else None
+        except RuntimeError as exc:
+            print(_red(f"Template id {ref!r} not found: {exc}"))
+            return 1
+    else:
+        tmpl = _find_app_template_by_pattern(ref, admin_token)
+        if tmpl is None:
+            print(_red(f"No App Template with profile_name_pattern {ref!r}."))
+            print(f"  List templates with: {_bold('noui tabby template list')}")
+            return 1
+
+    login_cfg = tmpl.get("login_config") or {}
+    export_pol = tmpl.get("export_policy") or {}
+    steps = login_cfg.get("steps", []) if isinstance(login_cfg, dict) else []
+
+    print(_bold(f"App Template: {tmpl.get('name', '?')}"))
+    print(f"  Template ID          : {_cyan(tmpl.get('id', '?'))}")
+    print(f"  profile_name_pattern : {_cyan(tmpl.get('profile_name_pattern', '?'))}")
+    print(f"  execute_enabled      : {tmpl.get('execute_enabled')}")
+    print(f"  credential_ref       : {tmpl.get('credential_ref') or tmpl.get('credential_ref_default')}")
+    print(f"  login_url            : {login_cfg.get('login_url') if isinstance(login_cfg, dict) else '?'}")
+    print(f"  login steps          : {len(steps)}")
+    for i, step in enumerate(steps, 1):
+        sel = step.get("selector", "")
+        detail = f" {sel}" if sel else (f" {step.get('url', '')}" if step.get("url") else "")
+        print(f"      {i}. {step.get('action', '?')}{detail}")
+    if isinstance(export_pol, dict):
+        ct = export_pol.get("credential_types", {})
+        print(f"  credential headers   : {ct.get('headers', []) if isinstance(ct, dict) else ct}")
+        print(f"  target_domains       : {export_pol.get('target_domains', [])}")
+    print()
+    pat = tmpl.get("profile_name_pattern", "?")
+    print(f"  Validate it with: {_bold(f'noui tabby template doctor {pat}')}")
+    return 0
+
+
+def cmd_tabby_template_doctor(args: argparse.Namespace) -> int:
+    """Diagnose whether an App Template will actually auto-provision for a user.
+
+    Encodes the silent failure modes of `autoProvisionFromTemplate`:
+      - a shared (owner=NULL) profile with the same profile_id short-circuits it;
+      - execute_enabled=false breaks /execute/fetch for provisioned apps;
+      - empty credential_types / target_domains yield profiles that cannot auth;
+      - an empty login_config means no login DSL to run.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    pattern: str = args.pattern
+    tmpl = _find_app_template_by_pattern(pattern, admin_token)
+    if tmpl is None:
+        print(_red(f"✗ No App Template with profile_name_pattern {pattern!r}."))
+        print(f"  List templates with: {_bold('noui tabby template list')}")
+        return 1
+
+    checks: list[tuple[str, str, str]] = []  # (status, label, detail)
+
+    def ok(label: str, detail: str = "") -> None:
+        checks.append(("ok", label, detail))
+
+    def warn(label: str, detail: str = "") -> None:
+        checks.append(("warn", label, detail))
+
+    print(_bold(f"Template doctor — pattern '{pattern}' (template '{tmpl.get('name', '?')}')"))
+    print()
+
+    ok("Template exists", f"id={tmpl.get('id', '?')}")
+
+    # 1. Shared (owner=NULL) profile that would short-circuit auto-provision.
+    profiles = _find_profiles_by_id(pattern, admin_token)
+    shared = [p for p in profiles if not p.get("owner_user_id")]
+    if shared:
+        states = ", ".join(sorted({str(p.get("version_state")) for p in shared}))
+        warn(
+            "A shared (owner=NULL) profile shadows this pattern",
+            f"{len(shared)} profile(s) [{states}] — credential requests resolve the shared "
+            f"profile first, so autoProvisionFromTemplate never fires for this slug.",
+        )
+    else:
+        ok("No shared profile shadows the pattern", "auto-provision can fire for federated users")
+
+    # 2. execute_enabled
+    if tmpl.get("execute_enabled"):
+        ok("execute_enabled = true", "provisioned apps can serve /execute/fetch")
+    else:
+        warn(
+            "execute_enabled = false",
+            "provisioned apps get no worker execute route — /execute/fetch will 502. "
+            "Recreate with execute_enabled if the skill uses execute.",
+        )
+
+    # 3. credential_types / target_domains in export_policy
+    export_pol = tmpl.get("export_policy") or {}
+    ct = export_pol.get("credential_types", {}) if isinstance(export_pol, dict) else {}
+    has_creds = bool((ct or {}).get("headers") or (ct or {}).get("cookies"))
+    if has_creds:
+        ok("export_policy.credential_types populated", f"headers={ct.get('headers', [])}")
+    else:
+        warn(
+            "export_policy.credential_types is empty",
+            "auto-provisioned profiles inherit no credential types and may not authenticate.",
+        )
+    if isinstance(export_pol, dict) and export_pol.get("target_domains"):
+        ok("export_policy.target_domains populated", f"{export_pol.get('target_domains')}")
+    else:
+        warn("export_policy.target_domains is empty", "credential capture has no domain scope.")
+
+    # 4. login_config has steps
+    login_cfg = tmpl.get("login_config") or {}
+    steps = login_cfg.get("steps", []) if isinstance(login_cfg, dict) else []
+    if steps:
+        ok("login_config has steps", f"{len(steps)} step(s)")
+    else:
+        warn("login_config has no steps", "nothing to run at login — provisioned sessions can't authenticate.")
+
+    # 5. credential_ref model (informational)
+    cref = tmpl.get("credential_ref") or tmpl.get("credential_ref_default") or "manual:"
+    if str(cref).startswith("manual:"):
+        ok("credential_ref = manual:", "each federated user completes login via HITL (no stored secret)")
+    else:
+        ok(f"credential_ref = {cref}", "provisioned profiles read this secret — ensure it exists per user/tenant")
+
+    # Render
+    glyph = {"ok": _green("✓"), "warn": _yellow("⚠")}
+    for status, label, detail in checks:
+        print(f"  {glyph[status]} {label}")
+        if detail:
+            print(f"      {detail}")
+
+    warns = sum(1 for s, _, _ in checks if s == "warn")
+    print()
+    if warns == 0:
+        print(_green("Verdict: template looks sound for auto-provisioning."))
+    else:
+        print(_yellow(f"Verdict: {warns} warning(s) — auto-provisioning may not work as expected (see above)."))
+    print("  Note: this validates template config; a live session for a provisioned profile")
+    print("  also needs the controller/k8s runtime (not present in local dev).")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # tabby session subcommands
 # ---------------------------------------------------------------------------
@@ -5566,6 +5790,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="If a template with the same name exists, update it (PUT, Admin-only)",
     )
 
+    tabby_template_sub.add_parser("list", help="List the tenant's App Templates")
+
+    tmpl_show_p = tabby_template_sub.add_parser(
+        "show", help="Show one App Template by id or profile_name_pattern"
+    )
+    tmpl_show_p.add_argument("template", help="Template id (UUID) or profile_name_pattern")
+
+    tmpl_doctor_p = tabby_template_sub.add_parser(
+        "doctor",
+        help="Diagnose whether a template will auto-provision (checks the silent failure modes)",
+    )
+    tmpl_doctor_p.add_argument("pattern", help="profile_name_pattern to diagnose")
+
     tabby_session_p = tabby_sub.add_parser("session", help="Manage browser sessions")
     tabby_session_sub = tabby_session_p.add_subparsers(dest="session_action")
 
@@ -5750,10 +5987,13 @@ def _dispatch_tabby_session(args: argparse.Namespace) -> int:
 def _dispatch_tabby_template(args: argparse.Namespace) -> int:
     action = getattr(args, "template_action", None)
     if action is None:
-        print("Usage: noui tabby template {create}")
+        print("Usage: noui tabby template {create,list,show,doctor}")
         return 1
     dispatch = {
         "create": cmd_tabby_template_create,
+        "list": cmd_tabby_template_list,
+        "show": cmd_tabby_template_show,
+        "doctor": cmd_tabby_template_doctor,
     }
     fn = dispatch.get(action)
     if fn is None:

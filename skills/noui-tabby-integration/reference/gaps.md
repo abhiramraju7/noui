@@ -43,6 +43,7 @@ The documented `/noui-record-login` happy path (`register → credentials → va
 `findHealthySession` throws `404`; the runtime's `execute_fetch` only maps `409` to the actionable "run `tabby session ensure`" message, so the common no-session case surfaces as an opaque `404`.
 - **Evidence:** `credentials.service.ts:362-363` (404); `execute_adapter.py:168-177` (only 409 special-cased).
 - **Recommendation:** treat `404 No healthy session` like `409` in `execute_adapter.py` — raise the "run `tabby session ensure --profile <slug>`" error.
+- **Status — implemented (NoUI).** `execute_adapter.py` now routes both `409` and `404`-with-a-session-marker (`"no healthy session"` / `"no active profile"` in the body) through a shared `_is_no_session()` helper to the actionable "run `tabby session ensure --profile <slug>`" error. A bare `404` without the marker, and an upstream `404` wrapped in a `200 {status:404}` body, are deliberately *not* misclassified. Tests: `tests/test_execute_adapter.py::TestNoSessionErrors`.
 
 ### B3 — Fresh local installs silently can't run `/execute/fetch` (`EXECUTE_ENABLED`/`LOCAL_WORKER_URL` not guaranteed) `[high · NoUI/Tabby]`
 The worker only mounts `/execute/*` if `EXECUTE_ENABLED==='true'`; the API needs `LOCAL_WORKER_URL` in dev (the K8s DNS name is unresolvable locally). `session ensure` doesn't inject either; `tabby/.env.example` lacks both. A new dev gets a worker with no execute routes and the failure only appears at first tool call.

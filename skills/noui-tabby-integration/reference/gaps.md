@@ -83,6 +83,14 @@ HEALTHY only means the keepalive passed. A missing artifact bundle yields **sile
 `findOne(... HEALTHY ...)` has no `ORDER BY`; if reconciliation left two HEALTHY rows, the chosen `pod_name` is arbitrary and may point at a gone pod → `502`.
 - **Evidence:** `credentials.service.ts:347-361` (no order).
 - **Recommendation:** add `ORDER BY updated_at DESC`, prefer a non-null recently-heartbeated `pod_name`.
+- **Status — document-only (Tabby submodule; needs a separate Tabby PR).** Verified against the live submodule: `apps/api/src/modules/credentials/credentials.service.ts` `findHealthySession` (≈`:347-366`) builds `where = { tenant_id, state: 'HEALTHY', app_id?, owner_user_id? }` and calls `this.sessionRepo.findOne({ where })` with **no `order`** — so with duplicate HEALTHY rows (a reconciliation race) the returned row, and thus `pod_name`, is arbitrary and can point at a terminated pod → `502` on execute/credentials. **Required change (Tabby-side, do NOT edit from this branch):** pass an ordering to `findOne`, preferring the freshest heartbeat and a live worker, e.g.:
+  ```ts
+  const session = await this.sessionRepo.findOne({
+    where,
+    order: { updated_at: 'DESC' },   // newest heartbeat first
+  });
+  ```
+  Ideally also bias toward a non-null `pod_name` (e.g. a query-builder `ORDER BY pod_name IS NULL ASC, updated_at DESC`) so a row with an assigned worker wins over a pod-less one. No NoUI-side half — this is purely a Tabby resolver determinism fix. The NoUI B5 warm-up retry mitigates the *symptom* (a stale-pod 502/404 can be retried after a warm-up) but does not fix the non-determinism.
 
 ---
 

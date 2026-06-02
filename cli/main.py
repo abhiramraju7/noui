@@ -191,6 +191,83 @@ def _cdp_is_reachable(host: str = "localhost", port: int = 9222, timeout: float 
         return False
 
 
+def _probe_execute_ready(profile_id: str, admin_token: str) -> tuple[str, str]:
+    """Probe whether /execute/fetch actually works for ``profile_id``.
+
+    A session can be DB-HEALTHY with a live worker on CDP :9222 yet have *no*
+    /execute/* routes mounted (the worker only mounts them when
+    EXECUTE_ENABLED==='true', :8091) or no LOCAL_WORKER_URL for the API to route
+    through. The CDP reachability check (:9222) does not prove either, so this
+    issues a trivial harmless POST /execute/fetch and classifies the result.
+
+    Returns ``(state, detail)`` where ``state`` is one of:
+      - ``"ready"``       — the execute path resolved a session and ran the fetch
+                            (any wrapped target status counts; the route works).
+      - ``"no-route"``    — 404 with a "no healthy session"/"no active profile"
+                            marker, or a 404/502 that indicates the execute route
+                            isn't mounted / worker unreachable.
+      - ``"unknown"``     — the probe itself could not run (API unreachable, auth
+                            error, unexpected status); caller should warn, not fail.
+
+    Never raises — execute readiness is advisory; a probe failure must not crash
+    ``session ensure``.
+    """
+    try:
+        resp = _tabby_http(
+            "POST",
+            "/execute/fetch",
+            {
+                "profile_id": profile_id,
+                "url": "https://example.com/",
+                "method": "GET",
+                "timeout_ms": 5000,
+            },
+            token=admin_token,
+            timeout=12,
+        )
+        # A dict response means the API routed to the worker and got {status,...}
+        # back — the execute path is live regardless of the wrapped target status.
+        return ("ready", f"execute/fetch routed (worker responded: {type(resp).__name__})")
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "http 404" in msg and ("no healthy session" in msg or "no active profile" in msg):
+            # The route exists but the resolver found no live session — usually a
+            # transient gap right after promotion; treat as not-ready, actionable.
+            return ("no-route", "no resolvable session for execute (route reachable)")
+        if "http 404" in msg:
+            return ("no-route", "/execute/fetch returned 404 — execute routes not mounted")
+        if "http 502" in msg or "http 504" in msg:
+            return ("no-route", "worker unreachable on :8091 (502/504) — check LOCAL_WORKER_URL")
+        return ("unknown", f"probe could not run: {exc}")
+
+
+def _report_execute_readiness(profile_id: str, admin_token: str) -> None:
+    """Probe and report execute readiness, distinguishing CDP from execute.
+
+    Advisory only: prints a status line for the CDP surface (:9222) and the
+    execute surface (:8091) so a "✓ HEALTHY" session that can't actually serve
+    /execute/fetch is visible *now*, not at the first tool call (gaps.md B4).
+    Never raises.
+    """
+    cdp_ok = _cdp_is_reachable()
+    print(f"  CDP :9222     : {_green('reachable') if cdp_ok else _yellow('unreachable')}")
+
+    state, detail = _probe_execute_ready(profile_id, admin_token)
+    if state == "ready":
+        print(f"  Execute :8091 : {_green('ready')}  ({detail})")
+    elif state == "no-route":
+        print(f"  Execute :8091 : {_red('NOT ready')}  ({detail})")
+        print(
+            _yellow(
+                "  ⚠ The session is HEALTHY but /execute/fetch is not serving. Ensure the "
+                "worker has EXECUTE_ENABLED=true and the API has LOCAL_WORKER_URL set "
+                "(both handled by re-running `noui tabby session ensure`), then retry."
+            )
+        )
+    else:
+        print(f"  Execute :8091 : {_yellow('unknown')}  ({detail})")
+
+
 def _tabby_worker_build_state() -> tuple[str, str]:
     """Report the freshness of the Tabby worker's compiled output.
 
@@ -4543,6 +4620,8 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
         pid = _read_pid(TABBY_WORKER_PID_FILE)
         if pid and _pid_running(pid) and _cdp_is_reachable():
             print(_green(f"✓ Session for '{profile_id}' is already HEALTHY"))
+            # B4: HEALTHY + CDP-reachable still doesn't prove /execute/fetch works.
+            _report_execute_readiness(profile_id, admin_token)
             # Still honor --open / --skill against the existing session.
             _maybe_navigate_from_args(args)
             return 0
@@ -4566,8 +4645,31 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
             "APP_ID": app_id,
             "TENANT_ID": tenant_id,
             "STREAMING_MODE": "cdp",
+            # B3: the worker only mounts /execute/* when EXECUTE_ENABLED==='true'
+            # (apps/worker/src/health-server.ts:33). On a fresh local install
+            # tabby/.env.local may lack it, leaving the session "✓ HEALTHY" with
+            # no execute routes — the failure only surfaces at the first tool call.
+            # Force it on for the spawned worker so /execute/fetch is always served.
+            "EXECUTE_ENABLED": "true",
         }
     )
+    # B3: the Tabby *API* (not this worker) needs LOCAL_WORKER_URL to reach the
+    # worker in dev — the K8s service DNS name is unresolvable locally
+    # (execute.service.ts: LOCAL_WORKER_URL else K8s DNS). We can't set it on the
+    # already-running API process from here, so warn loudly if it's absent from
+    # the environment the API was started with, and seed a sane default into the
+    # worker env so a co-located check has something to read.
+    env.setdefault("LOCAL_WORKER_URL", "http://localhost:8091")
+    if not os.environ.get("LOCAL_WORKER_URL") and "LOCAL_WORKER_URL" not in _load_env_local():
+        print(
+            _yellow(
+                "  ⚠ LOCAL_WORKER_URL is not set for the Tabby API. In local dev the API "
+                "reaches the worker via LOCAL_WORKER_URL (default http://localhost:8091); "
+                "without it /execute/fetch will fail to route. Add "
+                "LOCAL_WORKER_URL=http://localhost:8091 to tabby/.env.local and restart "
+                "`noui tabby start`."
+            )
+        )
 
     creds_mount = Path("/tmp/tabby-local-secrets")
     secret_name = entry.get("credential_ref", "k8s:secret/no-auth").replace("k8s:secret/", "")
@@ -4709,6 +4811,10 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
             return 1
 
     print(_green(f"✓ Session for '{profile_id}' is HEALTHY"))
+
+    # B4: prove /execute/fetch is actually served (:8091, EXECUTE_ENABLED), not
+    # just that CDP (:9222) is reachable.
+    _report_execute_readiness(profile_id, admin_token)
 
     _maybe_navigate_from_args(args)
 

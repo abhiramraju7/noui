@@ -542,3 +542,84 @@ class TestLoginRegisterPromoteFlag:
         assert rc == 0
         persisted = json.loads(bundle_path.read_text())
         assert persisted["_provisioned"]["version_state"] == "STAGING"
+
+
+# ---------------------------------------------------------------------------
+# 7. Execute-readiness probe (gaps.md B4) — :9222 CDP vs :8091 execute
+# ---------------------------------------------------------------------------
+
+
+class TestProbeExecuteReady:
+    """`_probe_execute_ready` classifies whether /execute/fetch actually works."""
+
+    def test_dict_response_is_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli_main, "_tabby_http", lambda *a, **k: {"status": 200, "body": "ok"})
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "ready"
+
+    def test_no_healthy_session_404_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError(
+                'HTTP 404 from POST /execute/fetch: {"message":"No healthy session"}'
+            )
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+
+    def test_plain_404_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError('HTTP 404 from POST /execute/fetch: {"message":"Cannot POST"}')
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, detail = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+        assert "not mounted" in detail
+
+    def test_502_is_no_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError("HTTP 502 from POST /execute/fetch: worker unreachable")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, detail = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "no-route"
+        assert "LOCAL_WORKER_URL" in detail
+
+    def test_unreachable_api_is_unknown_not_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_k):
+            raise RuntimeError("Cannot reach Tabby at http://localhost:8000 (Connection refused).")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", boom)
+        state, _ = cli_main._probe_execute_ready("my-app", "tok")
+        assert state == "unknown"
+
+
+class TestReportExecuteReadiness:
+    """`_report_execute_readiness` prints distinct CDP (:9222) and execute (:8091) lines."""
+
+    def test_warns_when_execute_not_ready(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli_main, "_cdp_is_reachable", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cli_main,
+            "_probe_execute_ready",
+            lambda _p, _t: ("no-route", "/execute/fetch returned 404 — execute routes not mounted"),
+        )
+        cli_main._report_execute_readiness("my-app", "tok")
+        out = capsys.readouterr().out
+        assert "CDP :9222" in out
+        assert "Execute :8091" in out
+        assert "NOT ready" in out
+        assert "EXECUTE_ENABLED=true" in out
+
+    def test_reports_ready(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli_main, "_cdp_is_reachable", lambda *a, **k: True)
+        monkeypatch.setattr(cli_main, "_probe_execute_ready", lambda _p, _t: ("ready", "routed"))
+        cli_main._report_execute_readiness("my-app", "tok")
+        out = capsys.readouterr().out
+        assert "Execute :8091" in out
+        assert "ready" in out
+        assert "NOT ready" not in out

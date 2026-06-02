@@ -50,11 +50,21 @@ The documented `/noui-record-login` happy path (`register → credentials → va
 The worker only mounts `/execute/*` if `EXECUTE_ENABLED==='true'`; the API needs `LOCAL_WORKER_URL` in dev (the K8s DNS name is unresolvable locally). `session ensure` doesn't inject either; `tabby/.env.example` lacks both. A new dev gets a worker with no execute routes and the failure only appears at first tool call.
 - **Evidence:** `apps/worker/src/health-server.ts:33`; `execute.service.ts` (LOCAL_WORKER_URL else K8s DNS); `cli/main.py:4488-4497` (no EXECUTE_ENABLED/LOCAL_WORKER_URL); `tabby/.env.example` (missing both).
 - **Recommendation:** inject `EXECUTE_ENABLED=true` into the spawned worker and assert/inject `LOCAL_WORKER_URL`; add both to `tabby/.env.example`; add an execute-readiness probe to `session ensure`.
+- **Status — NoUI-done + Tabby-documented.** `cmd_session_ensure` now forces `EXECUTE_ENABLED=true` into the spawned worker's subprocess env (so `/execute/*` is always mounted) and seeds `LOCAL_WORKER_URL=http://localhost:8091` into that env. Because the *API* (not this worker) is the process that reads `LOCAL_WORKER_URL` and it was started separately by `noui tabby start`, `session ensure` cannot set it on the live API process — so it warns loudly when `LOCAL_WORKER_URL` is absent from both `os.environ` and `tabby/.env.local`, pointing the user to add it and restart. Paired with the B4 readiness probe.
+  - **Tabby half (document-only, needs submodule PR):** add to `tabby/.env.example` (pinned submodule — do not edit from this branch):
+    ```
+    # Enables the worker's /execute/* HTTP routes (health-server.ts gate).
+    EXECUTE_ENABLED=true
+    # Dev-only: where the API reaches the per-session worker. In K8s this is the
+    # service DNS name; locally that name is unresolvable so set it explicitly.
+    LOCAL_WORKER_URL=http://localhost:8091
+    ```
 
 ### B4 — `session ensure` reports HEALTHY by probing CDP `:9222`, not the execute server `:8091` `[high · NoUI]`
 The readiness check validates the wrong surface — a session can be "✓ HEALTHY" with no `/execute/fetch` route mounted.
 - **Evidence:** `cli/main.py:4468-4479` (state + PID + `_cdp_is_reachable` on `:9222`); `health-server.ts:33` (execute routes independent of CDP).
 - **Recommendation:** after HEALTHY, probe a trivial `/execute/fetch` (or the worker `:8091`) and distinguish ":9222 CDP" from ":8091 execute" in status output.
+- **Status — implemented (NoUI).** Added `_probe_execute_ready(profile_id, admin_token)` — a trivial `POST /execute/fetch` (to `https://example.com/`, 5 s) classified into `ready` / `no-route` (404 marker, bare 404 ⇒ routes not mounted, 502/504 ⇒ worker unreachable) / `unknown` (probe itself couldn't run). `_report_execute_readiness` prints separate `CDP :9222` and `Execute :8091` status lines and warns when execute is not ready. Both `session ensure` success paths (already-HEALTHY early return and the fresh-start path) call it. The probe never raises — a probe failure degrades to a warning and never crashes `session ensure` (guardrail). Tests: `tests/test_cli_tabby.py::TestProbeExecuteReady`, `::TestReportExecuteReadiness`.
 
 ### B5 — `/execute/*` doesn't rescale idle-shutdown apps or refresh the idle timer `[medium · integration]`
 `/credentials/request` rescales an idle app to 1 on "no healthy session" and updates `last_credential_request_at`; `/execute/*` does neither. An execute-only tool never refreshes the idle timer → the app idle-shuts → next call `404`s with no auto-recovery.

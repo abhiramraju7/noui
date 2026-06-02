@@ -4757,7 +4757,11 @@ def _find_profiles_by_id(profile_id: str, admin_token: str) -> list[dict[str, An
     except RuntimeError:
         return []
     profiles = (
-        resp.get("data", []) if isinstance(resp, dict) else list(resp) if isinstance(resp, list) else []
+        resp.get("data", [])
+        if isinstance(resp, dict)
+        else list(resp)
+        if isinstance(resp, list)
+        else []
     )
     return [p for p in profiles if isinstance(p, dict) and p.get("profile_id") == profile_id]
 
@@ -4821,10 +4825,11 @@ def cmd_tabby_template_show(args: argparse.Namespace) -> int:
             return 1
     else:
         tmpl = _find_app_template_by_pattern(ref, admin_token)
-        if tmpl is None:
-            print(_red(f"No App Template with profile_name_pattern {ref!r}."))
-            print(f"  List templates with: {_bold('noui tabby template list')}")
-            return 1
+
+    if tmpl is None:
+        print(_red(f"No App Template found for {ref!r}."))
+        print(f"  List templates with: {_bold('noui tabby template list')}")
+        return 1
 
     login_cfg = tmpl.get("login_config") or {}
     export_pol = tmpl.get("export_policy") or {}
@@ -4834,8 +4839,12 @@ def cmd_tabby_template_show(args: argparse.Namespace) -> int:
     print(f"  Template ID          : {_cyan(tmpl.get('id', '?'))}")
     print(f"  profile_name_pattern : {_cyan(tmpl.get('profile_name_pattern', '?'))}")
     print(f"  execute_enabled      : {tmpl.get('execute_enabled')}")
-    print(f"  credential_ref       : {tmpl.get('credential_ref') or tmpl.get('credential_ref_default')}")
-    print(f"  login_url            : {login_cfg.get('login_url') if isinstance(login_cfg, dict) else '?'}")
+    print(
+        f"  credential_ref       : {tmpl.get('credential_ref') or tmpl.get('credential_ref_default')}"
+    )
+    print(
+        f"  login_url            : {login_cfg.get('login_url') if isinstance(login_cfg, dict) else '?'}"
+    )
     print(f"  login steps          : {len(steps)}")
     for i, step in enumerate(steps, 1):
         sel = step.get("selector", "")
@@ -4932,14 +4941,23 @@ def cmd_tabby_template_doctor(args: argparse.Namespace) -> int:
     if steps:
         ok("login_config has steps", f"{len(steps)} step(s)")
     else:
-        warn("login_config has no steps", "nothing to run at login — provisioned sessions can't authenticate.")
+        warn(
+            "login_config has no steps",
+            "nothing to run at login — provisioned sessions can't authenticate.",
+        )
 
     # 5. credential_ref model (informational)
     cref = tmpl.get("credential_ref") or tmpl.get("credential_ref_default") or "manual:"
     if str(cref).startswith("manual:"):
-        ok("credential_ref = manual:", "each federated user completes login via HITL (no stored secret)")
+        ok(
+            "credential_ref = manual:",
+            "each federated user completes login via HITL (no stored secret)",
+        )
     else:
-        ok(f"credential_ref = {cref}", "provisioned profiles read this secret — ensure it exists per user/tenant")
+        ok(
+            f"credential_ref = {cref}",
+            "provisioned profiles read this secret — ensure it exists per user/tenant",
+        )
 
     # Render
     glyph = {"ok": _green("✓"), "warn": _yellow("⚠")}
@@ -4953,7 +4971,11 @@ def cmd_tabby_template_doctor(args: argparse.Namespace) -> int:
     if warns == 0:
         print(_green("Verdict: template looks sound for auto-provisioning."))
     else:
-        print(_yellow(f"Verdict: {warns} warning(s) — auto-provisioning may not work as expected (see above)."))
+        print(
+            _yellow(
+                f"Verdict: {warns} warning(s) — auto-provisioning may not work as expected (see above)."
+            )
+        )
     print("  Note: this validates template config; a live session for a provisioned profile")
     print("  also needs the controller/k8s runtime (not present in local dev).")
     return 0

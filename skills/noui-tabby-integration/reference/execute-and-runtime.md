@@ -54,7 +54,7 @@ Error map (surface these in tooling):
 | `502` | Worker unreachable / fetch failed | `execute.service.ts` |
 | `504` | Worker timeout (`timeout_ms` + 5 s) | `execute.service.ts` |
 
-> **Execute does NOT auto-provision or rescale.** Unlike `/credentials/request` (which catches "no healthy session" and re-scales an idle app to 1, and triggers `autoProvisionFromTemplate`), the execute paths call `resolveActiveProfile`/`findHealthySession` with **no recovery** (`execute.service.ts:69`). A cold profile, an idle-shutdown app, or a never-provisioned template-backed profile will simply `404` on execute. `/execute/fetch` also does **not** update `last_credential_request_at`, so an execute-only tool never refreshes the idle timer.
+> **Execute does NOT auto-provision or rescale.** Unlike `/credentials/request` (which catches "no healthy session" and re-scales an idle app to 1, and triggers `autoProvisionFromTemplate`), the execute paths call `resolveActiveProfile`/`findHealthySession` with **no recovery** (`execute.service.ts:69`). A cold profile, an idle-shutdown app, or a never-provisioned template-backed profile will simply `404` on execute. `/execute/fetch` also does **not** update `last_credential_request_at`, so an execute-only tool never refreshes the idle timer. *(NoUI-side mitigation, opt-in: set `NOUI_EXECUTE_WARMUP=1` and the generated runtime issues one `POST /credentials/request` — which rescales/auto-provisions — then retries execute once before surfacing the error; gaps.md B5. The Tabby-side rescale-in-execute remains a documented follow-up.)*
 >
 > **Template vs direct makes no difference at execute time.** `resolveActiveProfile` never reads `template_id`; once a profile is ACTIVE, its provenance is invisible to execute.
 
@@ -94,7 +94,7 @@ The compiler emits one of two runtimes based on `--execution-mode` (default `tab
 - Each generated op calls `execute_fetch(PROFILE_SLUG, url, method=…, headers=…, body=…)`.
 - `PROFILE_SLUG` and `BASE_URL` are **baked into the op at compile time** from `auth_plan.profile_slug` (`server_generator.py:363`, `operation_generator.py`). Not read from env or re-read from `auth_plan.json` at runtime.
 - Auth: supports **both** modes (as of gaps.md A2). `_resolve_auth_mode()` honors explicit `NOUI_TABBY_AUTH_MODE`, else auto-detects `platform_jwt` when `ADOPT_*` are set, else `agent_token` (the default). `agent_token` → `POST /auth/agent-token` with `TABBY_CLIENT_ID`/`TABBY_CLIENT_SECRET`; `platform_jwt` → the two-step `POST /v1/users/api-token` → `POST /auth/token-exchange`, yielding a federated Tabby JWT that carries `owner_user_id`. Bearer tokens are cached per mode (`_get_tabby_bearer`), not re-fetched every call.
-- Surfaces `409` as the actionable "run `tabby session ensure --profile <slug>`" (`execute_adapter.py`) — but **not** `404` (the more common no-session case), which falls into an opaque error (gap B2, owned elsewhere).
+- Surfaces both `409` and a `404` carrying a no-session marker (`"no healthy session"` / `"no active profile"`) as the actionable "run `tabby session ensure --profile <slug>`" error (`execute_adapter.py`, gaps.md B2). A bare `404`, or an upstream `404` wrapped in a `200` body, is left untouched.
 
 ### Legacy: `http` mode → `noui_runtime/auth.py` (from `compiler/runtime/auth_adapter.py`)
 - In-process `httpx`; `resolve_auth()` → `POST /credentials/request` for headers/cookies, merged into the outgoing request.

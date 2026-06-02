@@ -166,6 +166,25 @@ skill uninstall <skill_id> <agent>   → remove installed copy
 → The agent loads the skill on demand (restart behavior varies by agent)
 ```
 
+---
+
+### Reference — Tabby integration
+
+#### `/noui-tabby-integration`
+
+Reference documentation (not a pipeline phase) for how NoUI depends on Tabby. Read it to understand or debug the integration: how Apps, ServiceProfiles, and App Templates are created and scoped, why a profile ends up "creator-only" vs tenant-wide (the `owner_user_id` switch, agent-token vs platform-JWT reach), how the `/execute/fetch` + `/execute/browser` runtime resolves a live session, and the end-to-end integration gaps.
+
+```
+SKILL.md                          → entry point: the model, the creator-only vs tenant-wide reconciliation
+reference/concepts.md             → data model, two credential systems, owner_user_id scoping, auth modes
+reference/provisioning.md         → what NoUI provisions today (raw apps/profiles) vs the App-Template path
+reference/execute-and-runtime.md  → /execute/fetch + /execute/browser, session lifecycle, auth-mode × execution-mode matrix
+reference/gaps.md                 → prioritized end-to-end gap analysis (NoUI vs Tabby side)
+reference/troubleshooting.md      → symptom → cause → fix
+```
+
+Use when: provisioning a connection, deciding how to make one usable tenant-wide, or diagnosing a runtime `404`/`409`/`502`.
+
 ## CLI Reference
 
 All commands: `.venv/bin/python cli/main.py <command>` from the `noui/` directory.

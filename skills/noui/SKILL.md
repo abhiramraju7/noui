@@ -47,6 +47,14 @@ npx skills add https://github.com/adoptai/noui --skill airbnb-search-places   # 
 npx skills add https://github.com/adoptai/noui --skill expedia-stay-search    # authenticated Expedia hotel search (via Tabby)
 ```
 
+## Install reference docs (optional)
+
+Deep-dive documentation of the NoUI ↔ Tabby integration — App/Profile/Template provisioning, `owner_user_id` scoping (why a profile is "creator-only" vs tenant-wide), the `/execute/fetch` + `/execute/browser` runtime, and the end-to-end integration gaps. Not part of the record → export pipeline; install when you need to understand or debug the Tabby dependency.
+
+```bash
+npx skills add https://github.com/adoptai/noui --skill noui-tabby-integration
+```
+
 ## Install everything at once (human users only)
 
 If you are a human at a terminal, the monolithic command opens an interactive selector where you tick the skills you want:
@@ -83,3 +91,4 @@ After installing the core skills, run `/noui-setup` in your agent to configure t
 | `/noui-generate-skill` | List, install, and uninstall generated skills across agents |
 | `/airbnb-search-places` | Demo: anonymous Airbnb place search |
 | `/expedia-stay-search` | Demo: authenticated Expedia stay search via Tabby |
+| `/noui-tabby-integration` | Reference: how NoUI uses Tabby — App/Profile/Template provisioning, `owner_user_id` scoping, the execute runtime, and integration gaps |

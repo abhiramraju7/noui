@@ -4155,11 +4155,88 @@ def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
         },
     )
 
+    # A3: optionally provision a tenant-wide App Template so a profile slug
+    # resolves for any tenant user. The exchanged Tabby JWT is authenticated, and
+    # POST /admin/app-templates is open to any authenticated user (own tenant), so
+    # this works without a Tabby admin token. With no --template-bundle, --cloud
+    # stays auth-verification-only (the documented prior behaviour).
+    template_bundle = getattr(args, "template_bundle", None)
+    if template_bundle:
+        rc = _provision_cloud_template(template_bundle, tabby_url, tabby_jwt)
+        if rc != 0:
+            return rc
+
     print()
     print(_green("✓ Cloud setup complete!"))
     print(f"  Settings written to: {_cyan(str(env_file))}")
     print("  Generated MCP servers/skills will authenticate via platform token-exchange.")
+    if not template_bundle:
+        print()
+        print(
+            _yellow(
+                "  No App Template provisioned (auth-verification only). Pass "
+                "--template-bundle <bundle.json> to emit a tenant-wide template, or run "
+                "`noui tabby template create <bundle.json>`."
+            )
+        )
     return 0
+
+
+def _provision_cloud_template(bundle_file: str, tabby_url: str, tabby_jwt: str) -> int:
+    """Emit a tenant-wide App Template against a cloud Tabby using the exchanged JWT.
+
+    Mirrors `noui tabby template create`, but POSTs to an absolute cloud URL with
+    the federated Tabby JWT (POST /admin/app-templates is open to any
+    authenticated user). PUT/upsert is Admin-only, so a name collision (409) is
+    treated as "already exists" rather than attempting an update.
+    """
+    from compiler.login.tabby_draft_generator import build_app_template_payload
+
+    bundle_path = Path(bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Template bundle not found: {bundle_path}"))
+        return 1
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse template bundle: {exc}"))
+        return 1
+
+    app_draft = bundle.get("application_draft", {})
+    profile_draft = bundle.get("service_profile_draft", {})
+    try:
+        payload = build_app_template_payload(app_draft, profile_draft)
+    except ValueError as exc:
+        print(_red(f"Cannot build template payload: {exc}"))
+        return 1
+
+    pattern = payload["profile_name_pattern"]
+    print(
+        f"Provisioning App Template (pattern '{_cyan(pattern)}') at {_cyan(tabby_url)} …",
+        end=" ",
+        flush=True,
+    )
+    try:
+        resp = _post_json_to(f"{tabby_url}/admin/app-templates", payload, token=tabby_jwt)
+        assert isinstance(resp, dict)
+        print(_green("✓"))
+        print(f"  Template ID          : {_cyan(resp.get('id', '?'))}")
+        print(f"  profile_name_pattern : {_cyan(resp.get('profile_name_pattern', pattern))}")
+        return 0
+    except RuntimeError as exc:
+        if "HTTP 409" in str(exc):
+            print(_yellow("already exists"))
+            print(
+                f"  A template for pattern '{pattern}' already exists in this tenant — reusing it."
+            )
+            return 0
+        print()
+        print(_red(f"App Template provisioning failed: {exc}"))
+        return 1
+    except AssertionError:
+        print()
+        print(_red("App Template creation returned an unexpected (non-dict) response."))
+        return 1
 
 
 def cmd_tabby_setup(args: argparse.Namespace) -> int:
@@ -5249,6 +5326,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         default=None,
         help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL)",
+    )
+    tabby_setup_p.add_argument(
+        "--template-bundle",
+        dest="template_bundle",
+        metavar="PATH",
+        default=None,
+        help=(
+            "With --cloud: also provision a tenant-wide App Template from this "
+            "login bundle so a profile slug resolves for any tenant user"
+        ),
     )
 
     tabby_template_p = tabby_sub.add_parser(

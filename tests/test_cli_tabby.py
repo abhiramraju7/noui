@@ -293,6 +293,7 @@ class TestTabbySetupCloud:
             "env_file": str(tmp_path / ".env"),
             "profiles": None,
             "force": False,
+            "template_bundle": None,
         }
         base.update(over)
         return SimpleNamespace(**base)
@@ -332,6 +333,88 @@ class TestTabbySetupCloud:
         assert "ADOPT_API_URL=https://api.adopt.ai" in env
         assert "ADOPT_CLIENT_ID=cid" in env
         assert "ADOPT_CLIENT_SECRET=sec" in env
+
+    def test_no_bundle_is_auth_verification_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A3: without --template-bundle, --cloud provisions nothing and says so.
+        self._clear_env(monkeypatch)
+        posted_paths: list[str] = []
+
+        def fake_urlopen(req, *_a, **_k):
+            posted_paths.append(req.full_url)
+            url = req.full_url
+            if url.endswith("/v1/users/api-token"):
+                return _FakeResponse({"access_token": "PLATFORM_JWT"})
+            if url.endswith("/auth/token-exchange"):
+                return _FakeResponse({"access_token": "TABBY_JWT"})
+            raise AssertionError(f"unexpected url {url}")
+
+        with _patched_urlopen(side_effect=fake_urlopen):
+            rc = cli_main.cmd_tabby_setup(self._args(tmp_path))
+
+        assert rc == 0
+        assert not any("/admin/app-templates" in p for p in posted_paths)
+        assert "No App Template provisioned" in capsys.readouterr().out
+
+    def test_template_bundle_provisions_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A3: with --template-bundle, --cloud also POSTs /admin/app-templates with
+        # the exchanged Tabby JWT and a slug-matched profile_name_pattern.
+        self._clear_env(monkeypatch)
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        seen: dict = {}
+
+        def fake_urlopen(req, *_a, **_k):
+            url = req.full_url
+            if url.endswith("/v1/users/api-token"):
+                return _FakeResponse({"access_token": "PLATFORM_JWT"})
+            if url.endswith("/auth/token-exchange"):
+                return _FakeResponse({"access_token": "TABBY_JWT"})
+            if url.endswith("/admin/app-templates"):
+                seen["url"] = url
+                seen["auth"] = req.get_header("Authorization")
+                seen["body"] = json.loads(req.data.decode())
+                return _FakeResponse({"id": "tmpl-cloud-1", "profile_name_pattern": "my-app"})
+            raise AssertionError(f"unexpected url {url}")
+
+        with _patched_urlopen(side_effect=fake_urlopen):
+            rc = cli_main.cmd_tabby_setup(self._args(tmp_path, template_bundle=str(bundle_path)))
+
+        assert rc == 0
+        assert seen["url"] == "https://tabby.cloud/admin/app-templates"
+        # POSTed with the exchanged (federated) Tabby JWT, not the platform JWT.
+        assert seen["auth"] == "Bearer TABBY_JWT"
+        assert seen["body"]["profile_name_pattern"] == "my-app"
+        assert seen["body"]["execute_enabled"] is True
+        assert "tmpl-cloud-1" in capsys.readouterr().out
+
+    def test_template_conflict_is_tolerated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A 409 (template already exists) must not fail cloud setup.
+        self._clear_env(monkeypatch)
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        def fake_urlopen(req, *_a, **_k):
+            url = req.full_url
+            if url.endswith("/v1/users/api-token"):
+                return _FakeResponse({"access_token": "PLATFORM_JWT"})
+            if url.endswith("/auth/token-exchange"):
+                return _FakeResponse({"access_token": "TABBY_JWT"})
+            if url.endswith("/admin/app-templates"):
+                raise _make_http_error(409, '{"detail":"Template exists"}')
+            raise AssertionError(f"unexpected url {url}")
+
+        with _patched_urlopen(side_effect=fake_urlopen):
+            rc = cli_main.cmd_tabby_setup(self._args(tmp_path, template_bundle=str(bundle_path)))
+
+        assert rc == 0
+        assert "already exists" in capsys.readouterr().out
 
     def test_missing_creds_returns_error_and_writes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

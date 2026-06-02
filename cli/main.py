@@ -304,6 +304,11 @@ def _tabby_worker_build_state() -> tuple[str, str]:
     newest_src = main_js_mtime
     newest_path = ""
     for ts_file in src_dir.rglob("*.ts"):
+        # Test files are excluded from the tsc build output, so they can never
+        # make the runtime dist stale — skip them or editing a *.spec.ts would
+        # flag a perpetual false-positive "stale build".
+        if ts_file.name.endswith((".spec.ts", ".test.ts")):
+            continue
         try:
             mtime = ts_file.stat().st_mtime
         except OSError:

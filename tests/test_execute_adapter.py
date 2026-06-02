@@ -10,6 +10,9 @@ Covers:
 - B2: a "no healthy session" 404 (and a 409) surfaces the actionable
   "run `tabby session ensure`" error, not an opaque message; an *upstream* 404
   (wrapped in a 200 body, or a bare 404 without the session marker) does not.
+- B5: with NOUI_EXECUTE_WARMUP enabled, a no-session response triggers exactly
+  one POST /credentials/request warm-up and one execute retry; disabled by
+  default; never loops.
 """
 
 from __future__ import annotations
@@ -110,6 +113,14 @@ def _fetch(module: types.ModuleType, **kw: Any) -> Coroutine[Any, Any, Any]:
     return module.execute_fetch("my-profile", "https://api.example.com/x", **kw)
 
 
+def _execute_count() -> int:
+    return sum(u.endswith("/execute/fetch") for u in _FakeAsyncClient.calls)
+
+
+def _warmup_count() -> int:
+    return sum(u.endswith("/credentials/request") for u in _FakeAsyncClient.calls)
+
+
 # ---------------------------------------------------------------------------
 # B2 — 404 / 409 actionability
 # ---------------------------------------------------------------------------
@@ -159,3 +170,71 @@ class TestNoSessionErrors:
             _run(_fetch(module))
         assert "session ensure" not in str(exc.value)
         assert "-> 404" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# B5 — opt-in warm-up retry
+# ---------------------------------------------------------------------------
+
+
+class TestWarmUpRetry:
+    def test_disabled_by_default_no_warmup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        module = _load_adapter(monkeypatch)
+        monkeypatch.delenv("NOUI_EXECUTE_WARMUP", raising=False)
+        _FakeAsyncClient.responses = {
+            "/execute/fetch": [_FakeResponse(404, text="No healthy session")]
+        }
+        with pytest.raises(RuntimeError):
+            _run(_fetch(module))
+        assert _warmup_count() == 0
+        assert _execute_count() == 1
+
+    def test_enabled_warms_up_then_retries_once_and_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = _load_adapter(monkeypatch)
+        monkeypatch.setenv("NOUI_EXECUTE_WARMUP", "1")
+        _FakeAsyncClient.responses = {
+            "/execute/fetch": [
+                _FakeResponse(404, text="No healthy session"),  # first attempt: cold
+                _FakeResponse(200, json_body={"status": 200, "body": '{"ok": true}'}),  # retry
+            ],
+            "/credentials/request": [_FakeResponse(200, json_body={"cookies": []})],
+        }
+        result = _run(_fetch(module))
+        assert result == {"ok": True}
+        assert _execute_count() == 2
+        assert _warmup_count() == 1
+
+    def test_enabled_retries_exactly_once_no_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the retry still has no session, error out — never loop."""
+        module = _load_adapter(monkeypatch)
+        monkeypatch.setenv("NOUI_EXECUTE_WARMUP", "true")
+        _FakeAsyncClient.responses = {
+            "/execute/fetch": [
+                _FakeResponse(404, text="No healthy session"),
+                _FakeResponse(404, text="No healthy session"),
+            ],
+            "/credentials/request": [_FakeResponse(202, json_body={})],
+        }
+        with pytest.raises(RuntimeError) as exc:
+            _run(_fetch(module))
+        assert "session ensure" in str(exc.value)
+        assert _execute_count() == 2  # exactly one retry
+        assert _warmup_count() == 1
+
+    def test_warmup_failure_does_not_mask_original_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed warm-up (5xx) must not trigger a retry, and the actionable error stands."""
+        module = _load_adapter(monkeypatch)
+        monkeypatch.setenv("NOUI_EXECUTE_WARMUP", "1")
+        _FakeAsyncClient.responses = {
+            "/execute/fetch": [_FakeResponse(404, text="No healthy session")],
+            "/credentials/request": [_FakeResponse(503, text="rescale failed")],
+        }
+        with pytest.raises(RuntimeError) as exc:
+            _run(_fetch(module))
+        assert "session ensure" in str(exc.value)
+        assert _execute_count() == 1  # 5xx warm-up → no retry
+        assert _warmup_count() == 1

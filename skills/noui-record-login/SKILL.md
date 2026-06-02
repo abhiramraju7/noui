@@ -220,7 +220,13 @@ Starts (or verifies) a persistent browser session worker for the registered prof
 
 ```
 ✓ Session for '<profile_id>' is HEALTHY
+  CDP :9222     : reachable
+  Execute :8091 : ready  (execute/fetch routed …)
 ```
+
+The two surface lines distinguish the CDP/streaming surface (`:9222`) from the execute surface (`:8091`, where `/execute/fetch` is served). If `Execute :8091` shows `NOT ready`, the session is HEALTHY but tools will fail — re-run `session ensure` so the worker gets `EXECUTE_ENABLED=true` and confirm `LOCAL_WORKER_URL` is set for the API.
+
+> **HEALTHY ≠ authenticated.** `HEALTHY` only means the keepalive passed (it can pass *pre-login* on an SPA whose `url_check` matches before auth completes). It does not prove the browser is logged in: an unfinished login makes `fetch(credentials:'include')` run unauthenticated, and the target's 401/403 returns **wrapped as a 200 body**. Pre-warm the live session at the authenticated entry point with `tabby session ensure --profile <slug> --open <auth-url>` (or `--skill <id>` to pull the start URL from a generated skill manifest), and verify one known-authenticated request returns real data before trusting the profile.
 
 **If this fails:**
 

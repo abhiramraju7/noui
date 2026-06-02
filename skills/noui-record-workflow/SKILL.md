@@ -11,6 +11,8 @@ All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`
 
 **Prerequisite:** `/noui-setup` must be complete. For Path A (session-cookie), `/noui-record-login` must also be complete and a live Tabby browser session must be running (`tabby session ensure`).
 
+> **HEALTHY ≠ authenticated.** A session reaching `HEALTHY` only means the keepalive passed — it does **not** prove the browser is logged in. An unfinished login lets `fetch(credentials:'include')` run unauthenticated, and the target's 401/403 comes back **wrapped as a 200 body**, so a tool can silently return error pages. Before trusting generated output: (1) pre-warm the session at the authenticated entry point with `tabby session ensure --profile <slug> --open <auth-url>` (or `--skill <id>`), and (2) verify one known-authenticated request returns real data. See `/noui-tabby-integration` for the full failure mode.
+
 ---
 
 ## Output Format Selection

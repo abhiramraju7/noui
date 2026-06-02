@@ -77,6 +77,7 @@ The readiness check validates the wrong surface — a session can be "✓ HEALTH
 HEALTHY only means the keepalive passed. A missing artifact bundle yields **silently empty** credentials on the credentials path; on the execute path an unfinished login lets `fetch(credentials:'include')` run unauthenticated and return the target's 401/403 as a 200-wrapped body.
 - **Evidence:** `credentials.service.ts:178-192` (null bundle → empty, no throw); `execute-handler.ts:60` (live-jar dependency); Tabby gotchas #9/#10/#16.
 - **Recommendation:** document HEALTHY≠authenticated; pre-warm with `session ensure --open <auth-url>` and verify a known authenticated request before trusting output.
+- **Status — docs-only (implemented).** Concise "HEALTHY ≠ authenticated" warnings added to `/noui-record-login` (Step 9, after the session-ensure output) and `/noui-record-workflow` (prerequisite block): both explain the 401/403-wrapped-as-200 failure, instruct to pre-warm with `tabby session ensure --profile <slug> --open <auth-url>` (or `--skill <id>`), and to verify one known-authenticated request before trusting output. The deeper detail already lives in `/noui-tabby-integration` (concepts/execute-and-runtime). No code change (per the gap's recommendation).
 
 ### B7 — `findHealthySession` is non-deterministic with duplicate HEALTHY rows `[medium · Tabby]`
 `findOne(... HEALTHY ...)` has no `ORDER BY`; if reconciliation left two HEALTHY rows, the chosen `pod_name` is arbitrary and may point at a gone pod → `502`.

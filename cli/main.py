@@ -1121,6 +1121,17 @@ def cmd_login_register(args: argparse.Namespace) -> int:
     print(f"  ServiceProfile DB ID : {_cyan(profile_db_id)}")
     print(f"  Tabby profile ID     : {_cyan(profile_id)}")
     print("  Version state        : STAGING")
+
+    # Optionally also emit a tenant-wide App Template so federated users can
+    # auto-provision their own profile from this same config (A1).
+    if getattr(args, "as_template", False):
+        print()
+        tmpl = _emit_app_template(patched_draft, profile_draft, admin_token, upsert=True)
+        if tmpl is not None:
+            bundle["_provisioned"]["template_id"] = tmpl.get("id", "")
+            bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
+            print(_green(f"  App Template ID      : {tmpl.get('id', '?')}"))
+
     print()
     print("  Next steps:")
     print(f"    {_bold(f'noui login credentials {bundle_path}')}")
@@ -4340,6 +4351,137 @@ def cmd_tabby_setup(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# tabby template subcommands (tenant-wide auto-provisioning)
+# ---------------------------------------------------------------------------
+
+
+def _emit_app_template(
+    application_draft: dict[str, Any],
+    service_profile_draft: dict[str, Any],
+    admin_token: str,
+    *,
+    upsert: bool = False,
+) -> dict[str, Any] | None:
+    """Build and POST an App Template; optionally upsert (PUT) if it already exists.
+
+    Returns the created/updated template dict, or None on failure (after printing
+    an actionable error). ``profile_name_pattern`` is forced to the runtime profile
+    slug so Tabby's autoProvisionFromTemplate matches federated credential/execute
+    requests for that slug.
+    """
+    from compiler.login.tabby_draft_generator import build_app_template_payload
+
+    try:
+        payload = build_app_template_payload(application_draft, service_profile_draft)
+    except ValueError as exc:
+        print(_red(f"Cannot build template payload: {exc}"))
+        return None
+
+    pattern = payload["profile_name_pattern"]
+    name = payload["name"]
+    print(
+        f"Creating App Template '{_cyan(name)}' (pattern '{_cyan(pattern)}') …", end=" ", flush=True
+    )
+    try:
+        resp = _tabby_http("POST", "/admin/app-templates", payload, token=admin_token)
+        assert isinstance(resp, dict)
+        print(_green("done"))
+        return resp
+    except RuntimeError as exc:
+        # A name collision (409) is expected on re-run; upsert via PUT when asked.
+        if upsert and "HTTP 409" in str(exc):
+            print(_yellow("exists"))
+            existing = _find_app_template_by_pattern(pattern, admin_token)
+            if not existing:
+                print(_red("  Template name exists but could not locate it by pattern to update."))
+                return None
+            tmpl_id = existing.get("id", "")
+            print(f"  Updating App Template {_cyan(tmpl_id)} …", end=" ", flush=True)
+            try:
+                resp = _tabby_http(
+                    "PUT", f"/admin/app-templates/{tmpl_id}", payload, token=admin_token
+                )
+                assert isinstance(resp, dict)
+                print(_green("done"))
+                return resp
+            except (RuntimeError, AssertionError) as exc2:
+                print()
+                print(_red(f"  Template update failed: {exc2}"))
+                print("  (PUT /admin/app-templates/:id is Admin-only — use an admin token.)")
+                return None
+        print()
+        print(_red(f"App Template creation failed: {exc}"))
+        return None
+    except AssertionError:
+        print()
+        print(_red("App Template creation returned an unexpected (non-dict) response."))
+        return None
+
+
+def _find_app_template_by_pattern(pattern: str, admin_token: str) -> dict[str, Any] | None:
+    """Return the first template whose profile_name_pattern matches, else None."""
+    try:
+        resp = _tabby_http("GET", "/admin/app-templates", token=admin_token)
+    except RuntimeError:
+        return None
+    templates = (
+        resp if isinstance(resp, list) else resp.get("data", []) if isinstance(resp, dict) else []
+    )
+    for t in templates:
+        if isinstance(t, dict) and t.get("profile_name_pattern") == pattern:
+            return t
+    return None
+
+
+def cmd_tabby_template_create(args: argparse.Namespace) -> int:
+    """Emit (or upsert) a Tabby App Template from a login bundle.
+
+    The bundle is the same JSON produced by `noui login export`/the draft
+    generator (application_draft + service_profile_draft). The template is the
+    tenant-wide blueprint Tabby auto-provisions per federated user — pair with the
+    platform_jwt runtime (A2) and `tabby setup --cloud`/cloud auth.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+
+    bundle_path = Path(args.bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Bundle file not found: {bundle_path}"))
+        return 1
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse bundle: {exc}"))
+        return 1
+
+    app_draft = bundle.get("application_draft", {})
+    profile_draft = bundle.get("service_profile_draft", {})
+    if not profile_draft.get("profile_id"):
+        print(_red("Bundle is missing service_profile_draft.profile_id"))
+        return 1
+
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    tmpl = _emit_app_template(
+        app_draft, profile_draft, admin_token, upsert=getattr(args, "upsert", False)
+    )
+    if tmpl is None:
+        return 1
+
+    print()
+    print(_green(f"App Template ready for profile slug '{profile_draft['profile_id']}'"))
+    print(f"  Template ID          : {_cyan(tmpl.get('id', '?'))}")
+    print(f"  profile_name_pattern : {_cyan(tmpl.get('profile_name_pattern', '?'))}")
+    print()
+    print("  Federated users (platform_jwt runtime) requesting this slug will be")
+    print("  auto-provisioned a private App+Profile+Session from this template.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # tabby session subcommands
 # ---------------------------------------------------------------------------
 
@@ -4730,6 +4872,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "register", help="Register bundle with Tabby (needs TABBY_ADMIN_TOKEN)"
     )
     login_register.add_argument("bundle_file", help="Path to bundle JSON file")
+    login_register.add_argument(
+        "--as-template",
+        dest="as_template",
+        action="store_true",
+        help=(
+            "Also emit a tenant-wide App Template (POST /admin/app-templates) so "
+            "federated users auto-provision their own profile from this config"
+        ),
+    )
 
     login_validate = login_sub.add_parser(
         "validate", help="Wait for Tabby profile to become HEALTHY"
@@ -5066,6 +5217,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL)",
     )
 
+    tabby_template_p = tabby_sub.add_parser(
+        "template", help="Manage tenant-wide App Templates (auto-provisioning blueprints)"
+    )
+    tabby_template_sub = tabby_template_p.add_subparsers(dest="template_action")
+    tmpl_create_p = tabby_template_sub.add_parser(
+        "create", help="Create (or upsert) an App Template from a login bundle"
+    )
+    tmpl_create_p.add_argument("bundle_file", help="Path to bundle JSON file")
+    tmpl_create_p.add_argument(
+        "--upsert",
+        action="store_true",
+        help="If a template with the same name exists, update it (PUT, Admin-only)",
+    )
+
     tabby_session_p = tabby_sub.add_parser("session", help="Manage browser sessions")
     tabby_session_sub = tabby_session_p.add_subparsers(dest="session_action")
 
@@ -5243,16 +5408,32 @@ def _dispatch_tabby_session(args: argparse.Namespace) -> int:
     return fn(args)
 
 
+def _dispatch_tabby_template(args: argparse.Namespace) -> int:
+    action = getattr(args, "template_action", None)
+    if action is None:
+        print("Usage: noui tabby template {create}")
+        return 1
+    dispatch = {
+        "create": cmd_tabby_template_create,
+    }
+    fn = dispatch.get(action)
+    if fn is None:
+        print(_red(f"Unknown template subcommand: {action}"))
+        return 1
+    return fn(args)
+
+
 def _dispatch_tabby(args: argparse.Namespace) -> int:
     cmd = getattr(args, "tabby_command", None)
     if cmd is None:
-        print("Usage: noui tabby {status,start,stop,setup,session}")
+        print("Usage: noui tabby {status,start,stop,setup,template,session}")
         return 1
     dispatch = {
         "status": cmd_tabby_status,
         "start": cmd_tabby_start,
         "stop": cmd_tabby_stop,
         "setup": cmd_tabby_setup,
+        "template": _dispatch_tabby_template,
         "session": _dispatch_tabby_session,
     }
     fn = dispatch.get(cmd)

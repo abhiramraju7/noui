@@ -366,3 +366,181 @@ class TestTabbySetupCloud:
 
         assert rc == 1
         assert not (tmp_path / ".env").exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. tabby template create — App Template emitter (A1)
+# ---------------------------------------------------------------------------
+
+
+def _template_bundle() -> dict:
+    return {
+        "validation": {"generator_valid": True},
+        "application_draft": {
+            "name": "My App",
+            "target_urls": ["https://app.example.com"],
+            "login_config": {
+                "login_url": "https://app.example.com/login",
+                "credential_ref": "k8s:secret/tabby-my-app",
+                "steps": [],
+            },
+            "keepalive_config": {"interval_seconds": 300, "actions": [], "health_checks": []},
+            "export_policy": {"artifact_types": ["cookies", "headers"]},
+            "notification_config": {"channels": ["slack:#local-dev"]},
+            "execute_enabled": True,
+        },
+        "service_profile_draft": {
+            "profile_id": "my-app",
+            "credential_types": {
+                "cookies": [{"name": "sid", "volatility": "STABLE"}],
+                "headers": [],
+            },
+            "target_domains": ["app.example.com"],
+        },
+    }
+
+
+class TestTabbyTemplateCreate:
+    def test_posts_template_with_slug_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+
+        posted: dict = {}
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            if method == "POST" and path == "/admin/app-templates":
+                posted.update(body)
+                return {"id": "tmpl-uuid-1", "profile_name_pattern": body["profile_name_pattern"]}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_tabby_template_create(
+            SimpleNamespace(bundle_file=str(bundle_path), upsert=False)
+        )
+        assert rc == 0
+        # The match key MUST equal the runtime profile slug.
+        assert posted["profile_name_pattern"] == "my-app"
+        # credential_types folded into export_policy for autoProvisionFromTemplate.
+        assert posted["export_policy"]["credential_types"]["cookies"][0]["name"] == "sid"
+        assert posted["execute_enabled"] is True
+        out = capsys.readouterr().out
+        assert "tmpl-uuid-1" in out
+
+    def test_upsert_updates_on_conflict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+
+        calls: list[tuple[str, str]] = []
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            calls.append((method, path))
+            if method == "POST" and path == "/admin/app-templates":
+                raise RuntimeError('HTTP 409 from POST /admin/app-templates: {"detail":"exists"}')
+            if method == "GET" and path == "/admin/app-templates":
+                return [{"id": "tmpl-existing", "profile_name_pattern": "my-app"}]
+            if method == "PUT" and path == "/admin/app-templates/tmpl-existing":
+                return {"id": "tmpl-existing", "profile_name_pattern": body["profile_name_pattern"]}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_tabby_template_create(
+            SimpleNamespace(bundle_file=str(bundle_path), upsert=True)
+        )
+        assert rc == 0
+        assert ("POST", "/admin/app-templates") in calls
+        assert ("PUT", "/admin/app-templates/tmpl-existing") in calls
+
+    def test_missing_profile_id_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle = _template_bundle()
+        del bundle["service_profile_draft"]["profile_id"]
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+
+        rc = cli_main.cmd_tabby_template_create(
+            SimpleNamespace(bundle_file=str(bundle_path), upsert=False)
+        )
+        assert rc == 1
+
+
+class TestLoginRegisterAsTemplate:
+    def test_as_template_also_emits_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+
+        paths: list[str] = []
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            paths.append(path)
+            if path == "/apps":
+                return {"app_id": "app-1"}
+            if path == "/admin/profiles":
+                return {"id": "db-1"}
+            if path == "/admin/app-templates":
+                return {"id": "tmpl-1", "profile_name_pattern": body["profile_name_pattern"]}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), as_template=True)
+        )
+        assert rc == 0
+        assert "/admin/app-templates" in paths
+        out = capsys.readouterr().out
+        assert "App Template ID" in out
+        # template_id persisted back into the bundle.
+        saved = json.loads(bundle_path.read_text())
+        assert saved["_provisioned"]["template_id"] == "tmpl-1"
+
+    def test_default_register_does_not_emit_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bundle_path = tmp_path / "bundle.json"
+        bundle_path.write_text(json.dumps(_template_bundle()))
+
+        monkeypatch.setattr(cli_main, "_tabby_alive", lambda: True)
+        monkeypatch.setattr(cli_main, "_get_admin_token", lambda: "tok")
+        monkeypatch.setattr(cli_main, "_load_cache", lambda: {})
+        monkeypatch.setattr(cli_main, "_save_cache", lambda _c: None)
+
+        paths: list[str] = []
+
+        def fake_http(method: str, path: str, body=None, token=None, timeout=15):  # noqa: ARG001
+            paths.append(path)
+            if path == "/apps":
+                return {"app_id": "app-1"}
+            if path == "/admin/profiles":
+                return {"id": "db-1"}
+            raise AssertionError(f"unexpected call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "_tabby_http", fake_http)
+
+        rc = cli_main.cmd_login_register(
+            SimpleNamespace(bundle_file=str(bundle_path), as_template=False)
+        )
+        assert rc == 0
+        assert "/admin/app-templates" not in paths

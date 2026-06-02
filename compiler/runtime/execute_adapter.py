@@ -10,6 +10,15 @@ fingerprint is preserved.
 Requests run over plain HTTP via httpx — there is no client-side CDP or
 WebSocket connection. The Tabby worker runs the actual fetch inside the
 authenticated browser server-side.
+
+Two auth modes are supported (mirroring noui_runtime/auth.py):
+  - agent_token  : POST /auth/agent-token with TABBY_CLIENT_ID/SECRET (default,
+                   local/self-host). No owner_user_id — shared (NULL-owner) reach.
+  - platform_jwt : POST /v1/users/api-token (Adopt) → POST /auth/token-exchange
+                   (Tabby). Carries owner_user_id, so /execute/fetch resolves the
+                   per-user profile and can trigger template auto-provisioning.
+The mode is resolved from NOUI_TABBY_AUTH_MODE (explicit) or auto-detected from
+the presence of ADOPT_* credentials. Bearer tokens are cached per mode.
 """
 
 from __future__ import annotations
@@ -37,15 +46,26 @@ Why this module exists:
   - Bypasses Akamai / Cloudflare false positives that fire on httpx requests.
   - No WebSocket or CDP access needed — plain HTTP to the Tabby API.
 
+Auth modes (resolved from NOUI_TABBY_AUTH_MODE, else auto-detected):
+  - agent_token  : TABBY_CLIENT_ID / TABBY_CLIENT_SECRET via /auth/agent-token
+                   (local/self-host default; shared NULL-owner profile reach).
+  - platform_jwt : ADOPT_* platform credentials → platform JWT → Tabby JWT via
+                   /auth/token-exchange (cloud; carries owner_user_id, so the
+                   server resolves the caller's own profile and can auto-provision
+                   it from an App Template).
+
 Requires:
   - A running Tabby session for the target profile.
   - TABBY_API_URL env var (or .env) pointing to the Tabby API.
-  - Agent credentials (TABBY_CLIENT_ID / TABBY_CLIENT_SECRET) for token exchange.
+  - agent_token mode: TABBY_CLIENT_ID / TABBY_CLIENT_SECRET.
+  - platform_jwt mode: ADOPT_API_URL / ADOPT_CLIENT_ID / ADOPT_CLIENT_SECRET.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -91,19 +111,39 @@ def _tabby_api_host() -> str:
     return os.environ.get("TABBY_API_URL") or "http://localhost:8000"
 
 
-async def _get_agent_token() -> str:
-    """Exchange client credentials for an agent bearer token.
+def _adopt_api_url() -> str:
+    return os.environ.get("ADOPT_API_URL", "").rstrip("/")
 
-    Reads TABBY_CLIENT_ID and TABBY_CLIENT_SECRET from env.
-    Caches nothing — the caller (execute_fetch) is typically invoked once per
-    tool call, and token exchange is cheap relative to the browser fetch.
+
+def _resolve_auth_mode() -> str:
+    """Pick the Tabby auth flow: explicit NOUI_TABBY_AUTH_MODE wins, else auto-detect.
+
+    Auto-detect chooses platform_jwt when all three ADOPT_* credentials are
+    present, otherwise agent_token (the local/self-host default).
+    """
+    explicit = os.environ.get("NOUI_TABBY_AUTH_MODE", "").strip().lower()
+    if explicit:
+        return explicit
+    if _adopt_api_url() and os.environ.get("ADOPT_CLIENT_ID") and os.environ.get("ADOPT_CLIENT_SECRET"):
+        return "platform_jwt"
+    return "agent_token"
+
+
+async def _get_agent_token() -> tuple[str, int]:
+    """agent_token mode: exchange client credentials for an agent bearer token.
+
+    Reads TABBY_CLIENT_ID and TABBY_CLIENT_SECRET from env. Returns the token and
+    its TTL in seconds. This token has no owner_user_id, so the server resolves
+    only shared (NULL-owner) profiles.
     """
     client_id = os.environ.get("TABBY_CLIENT_ID", "")
     client_secret = os.environ.get("TABBY_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         raise RuntimeError(
-            "TABBY_CLIENT_ID and TABBY_CLIENT_SECRET must be set. "
-            "Create an agent client in the Tabby admin UI."
+            "TABBY_CLIENT_ID and TABBY_CLIENT_SECRET must be set for agent_token mode. "
+            "Run `noui tabby setup`, set them in noui/.env, or switch to platform_jwt "
+            "mode (set ADOPT_* / NOUI_TABBY_AUTH_MODE=platform_jwt, or run "
+            "`noui tabby setup --cloud`)."
         )
 
     async with httpx.AsyncClient() as client:
@@ -114,7 +154,96 @@ async def _get_agent_token() -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    return data["access_token"]
+    token = data.get("access_token") or data.get("token", "")
+    if not token:
+        raise RuntimeError(f"POST /auth/agent-token returned no token: {data}")
+    return token, int(data.get("expires_in", 3600))
+
+
+async def _get_platform_jwt() -> str:
+    """platform_jwt mode step 1: exchange platform client credentials for a platform JWT.
+
+    Calls the Adopt platform proxy (POST /v1/users/api-token), which returns a
+    Frontegg-signed JWT that Tabby validates via its registered IdP.
+    """
+    adopt_api_url = _adopt_api_url()
+    if not adopt_api_url:
+        raise RuntimeError(
+            "Missing ADOPT_API_URL for platform_jwt auth mode.\\n"
+            "Set ADOPT_API_URL (e.g. https://api.adopt.ai) in noui/.env "
+            "or run `noui tabby setup --cloud`."
+        )
+    client_id = os.environ.get("ADOPT_CLIENT_ID", "")
+    client_secret = os.environ.get("ADOPT_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "Missing ADOPT_CLIENT_ID or ADOPT_CLIENT_SECRET for platform_jwt auth mode.\\n"
+            "Set these in noui/.env or run `noui tabby setup --cloud`."
+        )
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{adopt_api_url}/v1/users/api-token",
+            json={"client_id": client_id, "secret": client_secret},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    token = data.get("access_token", "")
+    if not token:
+        raise RuntimeError(f"Platform /v1/users/api-token returned no access_token: {data}")
+    return token
+
+
+async def _get_platform_tabby_token() -> tuple[str, int]:
+    """platform_jwt mode step 2: exchange the platform JWT for a Tabby JWT.
+
+    The exchanged Tabby JWT carries owner_user_id, so /execute/fetch resolves the
+    caller's own profile (and can trigger template auto-provisioning).
+    """
+    platform_jwt = await _get_platform_jwt()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{_tabby_api_host()}/auth/token-exchange",
+            json={"subject_token": platform_jwt, "subject_token_type": "oidc_jwt"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    token = data.get("access_token", "")
+    if not token:
+        raise RuntimeError(f"Tabby /auth/token-exchange returned no access_token: {data}")
+    return token, int(data.get("expires_in", 3600))
+
+
+_TOKEN_REFRESH_MARGIN_SECONDS = 60
+_token_cache: dict[str, tuple[str, float]] = {}
+_token_lock = asyncio.Lock()
+
+
+async def _get_tabby_bearer() -> str:
+    """Return a valid Tabby bearer token for the active auth mode, cached in-process.
+
+    Mode is resolved from NOUI_TABBY_AUTH_MODE (explicit) or auto-detected from the
+    presence of ADOPT_* platform credentials. The token is cached per mode until
+    shortly before it expires, so repeated execute_fetch() calls reuse it instead
+    of re-running the exchange every time.
+    """
+    mode = _resolve_auth_mode()
+    async with _token_lock:
+        cached = _token_cache.get(mode)
+        if cached is not None and cached[1] > time.monotonic():
+            return cached[0]
+        if mode == "platform_jwt":
+            token, ttl = await _get_platform_tabby_token()
+        elif mode == "agent_token":
+            token, ttl = await _get_agent_token()
+        else:
+            raise RuntimeError(
+                f"Unknown NOUI_TABBY_AUTH_MODE {mode!r} — "
+                f"expected 'agent_token' or 'platform_jwt'."
+            )
+        _token_cache[mode] = (token, time.monotonic() + max(0, ttl - _TOKEN_REFRESH_MARGIN_SECONDS))
+        return token
 
 
 async def execute_fetch(
@@ -143,7 +272,7 @@ async def execute_fetch(
     Returns:
         Parsed JSON body on 2xx; raises RuntimeError on non-2xx or errors.
     """
-    token = await _get_agent_token()
+    token = await _get_tabby_bearer()
 
     request_body: dict[str, Any] = {
         "profile_id": profile_id,

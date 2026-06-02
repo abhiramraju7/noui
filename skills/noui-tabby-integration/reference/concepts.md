@@ -117,7 +117,7 @@ Tabby is both an OAuth2 authorization server (mints HS256 JWTs) and a resource s
 | `owner_user_id` | **None** (`auth.service.ts:183`) | **Set** from the IdP `userId`/`sub` claim (`token-exchange.service.ts:138,188`) |
 | Reach | **Tenant-wide** for its `allowed_profiles` (owner filter skipped) | **Per-user** (owner-scoped); the only token that can trigger template auto-provisioning |
 | Role | `Agent` (gated to `allowed_profiles` on every action) | `Admin` if email domain ∈ `idp.admin_domains`, else `default_role`/`Operator` |
-| NoUI uses it for | The **default `tabby` runtime** (`/execute/fetch`) and the autopilot browser driver | The legacy `--execution-mode http` runtime, and `tabby setup --cloud` verification |
+| NoUI uses it for | Default mode for the **`tabby` runtime** (`/execute/fetch`) and the autopilot browser driver | Both the **`tabby`** runtime (when `platform_jwt` is selected — gaps.md A2) and the legacy `--execution-mode http` runtime, plus `tabby setup --cloud` |
 
 Tenancy: `tenant_id` is read from the verified JWT, never the request body for normal callers. `tenants.id` is a **varchar** so a Frontegg org id can be used directly. Token-exchange can auto-create a tenant if `idp.allow_auto_provision` is set; otherwise the tenant **must already exist** or token-exchange returns `Tenant not found` (a known cloud prerequisite). The IdP is a **global singleton** (no `tenant_id` column); multi-tenant routing is via the `tenant_id_claim` on the incoming JWT.
 

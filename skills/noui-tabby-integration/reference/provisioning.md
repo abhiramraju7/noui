@@ -44,7 +44,7 @@ The heavier flow that produces a runnable profile:
 | `POST` | `/admin/profiles/{id}/promote` | `STAGING→CANARY`, then `CANARY→ACTIVE` (`tabby setup` only) | **Admin** |
 | `POST` | `/admin/agent-clients` | Register the `noui` agent client (runtime auth) | Admin |
 
-**Critical omission:** NoUI never sets `execute_enabled` on the app (verified: no occurrence in `cli/`, `compiler/`, `backend/`). It defaults to `false`. Execute works in local dev only because the locally-spawned worker reads `EXECUTE_ENABLED=true` from `tabby/.env.local` and the API uses `LOCAL_WORKER_URL` — both bypass the app row. See [gaps.md](gaps.md).
+**`execute_enabled` (gaps.md A4):** NoUI now sets `execute_enabled: true` on every app payload (`application_draft`, `tabby setup`'s `_build_app_payload`, and the template emitter), and `noui tabby session ensure` warns if a resolved app row still has it `false`. Tabby's app `execute_enabled` defaults to `false`, so a pre-existing app (or one created by another tool) may still need re-provisioning. Locally, execute also works via the spawned worker's `EXECUTE_ENABLED=true` from `tabby/.env.local` + `LOCAL_WORKER_URL`, which bypass the app row. **Open (Tabby-side):** the App Template entity has no `execute_enabled` column and `autoProvisionFromTemplate` doesn't copy it, so per-user auto-provisioned cloud apps stay execute-disabled until the Tabby change lands. See [gaps.md](gaps.md) A4.
 
 ### Where identifiers are stored (file-based, no central DB)
 
@@ -60,18 +60,18 @@ The heavier flow that produces a runnable profile:
 | | `noui tabby setup` (local) | `noui tabby setup --cloud` |
 |---|---|---|
 | Identity | Admin bootstrap user (human JWT) | Developer's **platform PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) |
-| What it does | Provisions `noui` agent client + ServiceProfiles (→ ACTIVE); writes `TABBY_*` | **Only verifies** the PAT → `/v1/users/api-token` → `/auth/token-exchange` round-trip; writes `ADOPT_*`, `TABBY_API_URL`, `NOUI_TABBY_AUTH_MODE=platform_jwt` (`cli/main.py:4086`) |
-| Provisions a connection? | **Yes** (App + Profile, promoted ACTIVE) | **No** — creates **no App, Profile, or Template** |
-| Runtime token | `agent_token` (works with default `tabby` runtime) | `platform_jwt` (**ignored by the default `tabby` runtime** — see [execute-and-runtime.md](execute-and-runtime.md)) |
+| What it does | Provisions `noui` agent client + ServiceProfiles (→ ACTIVE); writes `TABBY_*` | Verifies the PAT → `/v1/users/api-token` → `/auth/token-exchange` round-trip; writes `ADOPT_*`, `TABBY_API_URL`, `NOUI_TABBY_AUTH_MODE=platform_jwt`. With `--template-bundle <bundle.json>` it **also provisions a tenant-wide App Template** (gaps.md A3) |
+| Provisions a connection? | **Yes** (App + Profile, promoted ACTIVE) | With `--template-bundle`: **yes — an App Template** (the per-user auto-provisioning blueprint). Without it: no (auth-verification only) |
+| Runtime token | `agent_token` (works with default `tabby` runtime) | `platform_jwt` — **now honored by the default `tabby` runtime** (gaps.md A2); see [execute-and-runtime.md](execute-and-runtime.md) |
 | Prereq | Local Tabby + admin token | The org's **tenant must already exist** in cloud Tabby, else token-exchange `401 Tenant not found` |
 
-> **Two cloud dead-ends, stacked.** `tabby setup --cloud` provisions nothing, *and* the default `tabby` runtime ignores the `platform_jwt` it configured. Today the supported model is "one developer / service principal per tenant," not per-end-user. Multi-user serving is explicitly out of scope in `plans/noui/noui-cloud-tabby-auth-plan.md` §F.
+> **Both cloud dead-ends are closed (gaps.md A1–A4).** `tabby setup --cloud --template-bundle` now provisions an App Template, *and* the default `tabby` runtime now consumes the `platform_jwt` it configured. The tenant-wide, per-user model is wired NoUI-side; the remaining end-to-end "hop 3" proof (a federated request that actually triggers `autoProvisionFromTemplate`) still needs a live cloud Tabby + the A4 Tabby-side `execute_enabled` change. The prior "one developer / service principal per tenant" framing in `plans/noui/noui-cloud-tabby-auth-plan.md` §F predates this work.
 
 ---
 
-## 3. The App Template path (Tabby-built, NoUI-not-built)
+## 3. The App Template path (Tabby-built, NoUI now emits)
 
-This is the mechanism that makes a connection reusable tenant-wide. **Tabby has it fully built; NoUI does not emit templates at all.** (Verified: grep across `cli/ backend/ runtime/ compiler/` returns zero references to app-templates / `profile_name_pattern`.)
+This is the mechanism that makes a connection reusable tenant-wide. Tabby has it fully built, and **NoUI now emits templates** (gaps.md A1): `noui tabby template create <bundle.json>`, `noui login register --as-template`, and `noui tabby setup --cloud --template-bundle <bundle.json>`. All three derive the payload from the same drafts the login flow builds (see "How NoUI emits a template" below).
 
 ### How auto-provisioning works (Tabby side)
 
@@ -100,19 +100,19 @@ There is **no explicit "instantiate" endpoint**. Instantiation is **implicit and
 
 `applications.template_id` is the lineage FK (migration 020). On `PUT`, `propagateToLinkedApps` (`app-templates.service.ts:89`) copies `PROPAGATED_FIELDS = [browser_policy, login_config, keepalive_config, export_policy, notification_config]` onto all linked **applications** (chunked by 50). It does **not** touch the per-user `service_profiles` cloned at provision time, and `name`/`profile_name_pattern`/`credential_ref_default`/`idle_shutdown_seconds` are not propagated. So a template edit does not reach already-provisioned users' profiles (a real gap — see [gaps.md](gaps.md)).
 
-### What a NoUI App-Template emitter would need (the unbuilt follow-on)
+### How NoUI emits a template (gaps.md A1)
 
-This is the design intent in `plans/noui/noui-cloud-tabby-auth-plan.md` "Caveat 3" (deferred to an unwritten follow-on). To wire it:
+`build_app_template_payload(application_draft, service_profile_draft)` (`compiler/login/tabby_draft_generator.py`) derives the `/admin/app-templates` payload from the same drafts the login flow builds. The CLI surfaces it three ways: `noui tabby template create <bundle.json> [--upsert]`, `noui login register --as-template`, and `noui tabby setup --cloud --template-bundle <bundle.json>`. The builder enforces the four correctness rules that were the original design intent (`plans/noui/noui-cloud-tabby-auth-plan.md` "Caveat 3"):
 
-1. **Emit a template, not raw entities.** Add a `register_app_template` path that `POST`s `/admin/app-templates` with `{name, profile_name_pattern, login_config, keepalive_config, export_policy, browser_policy, notification_config}` derived from the same drafts `tabby_draft_generator` already builds.
-2. **`profile_name_pattern` MUST equal the runtime `profile_slug`** baked into generated ops (`auth_plan.profile_slug` / `PROFILE_SLUG`), or `autoProvisionFromTemplate` will never match.
-3. **Set `execute_enabled: true`** — auto-provisioned apps default it to `false`, which breaks `/execute/fetch` in real K8s (the template has no field for it today; this needs a Tabby change or a post-provision patch).
-4. **Fix the `credential_types` cookie shape** to `[{name, volatility}]` objects *before* it lands in `export_policy.credential_types`, or every auto-provisioned user inherits the empty-credential bug.
-5. **Use the `platform_jwt` runtime** so the token carries `owner_user_id` and actually triggers auto-provisioning — which means porting `platform_jwt` into the default `tabby` execute adapter (today it's agent-token-only).
+1. **Emits a template, not raw entities** — `POST /admin/app-templates` with `{name, profile_name_pattern, login_config, keepalive_config, export_policy, browser_policy, notification_config, execute_enabled}`.
+2. **`profile_name_pattern` == the runtime `profile_slug`** (`service_profile_draft.profile_id` / `PROFILE_SLUG`), or `autoProvisionFromTemplate` would never match. Enforced + unit-tested.
+3. **Sets `execute_enabled: true`** (gaps.md A4) — auto-provisioned apps default it to `false`, breaking `/execute/fetch` in real K8s. ⚠️ The template entity has **no field for it yet**, so Tabby's DTO whitelist currently drops the value; the Tabby-side change (entity column + DTO + `autoProvisionFromTemplate` copy) is documented in gaps.md A4 and needs a Tabby PR.
+4. **`credential_types` are object-shaped (`[{name, volatility}]`) and folded into `export_policy`** — `autoProvisionFromTemplate` clones the per-user profile's `credential_types`/`target_domains` from `export_policy` (`credentials.service.ts`), not from a profile draft, so the builder folds them in. The object shape itself comes from `_cookie_credential_types` (gaps.md D1).
+5. **Uses the `platform_jwt` runtime** so the token carries `owner_user_id` and triggers auto-provisioning — now supported in the default `tabby` execute adapter (gaps.md A2), not just legacy `http` mode.
 
 ### Migrating an existing profile to a template
 
-There is **no tooling** for this today. A NULL-owner profile created directly does not auto-clone for other users (it is served as a single shared row, not reproduced per user). A proposed approach: a `noui tabby template adopt --profile <slug>` command that reads an existing app/profile config and `POST`s a matching `/admin/app-templates` row (`profile_name_pattern = slug`). Note the `COALESCE(owner_user_id,'')` unique index (migration 015) means a NULL-owner and an owner-stamped ACTIVE row cannot coexist for the same `profile_id` — de-duplication is required.
+If you still have the **login bundle**, `noui tabby template create <bundle.json>` emits a matching template directly (`profile_name_pattern = slug`). What's **not** automated is adopting a profile that exists only as a live Tabby row (no bundle on disk) — there's no `noui tabby template adopt --profile <slug>` that reads the existing app/profile config back out of Tabby and POSTs a template from it. Also note: a NULL-owner profile created directly does not auto-clone for other users (it is served as a single shared row, not reproduced per user), and the `COALESCE(owner_user_id,'')` unique index (migration 015) means a NULL-owner and an owner-stamped ACTIVE row cannot coexist for the same `profile_id` — so migrating a shared profile to the per-user template path requires de-duplication.
 
 ---
 

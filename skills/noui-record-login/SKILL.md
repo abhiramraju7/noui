@@ -124,6 +124,8 @@ Tabby must be reachable at `TABBY_API_URL` (default `http://localhost:8080`) and
 
 Provisions a Tabby Application and a STAGING ServiceProfile. On success:
 
+> **Tenant-wide (optional):** add `--as-template` to also emit a Tabby App Template from the same bundle, so other tenant users auto-provision their own profile from this config (federated/`platform_jwt` runtime). You can also do this separately via `noui tabby template create <bundle.json>`. See `/noui-tabby-integration` → `reference/provisioning.md`.
+
 ```
 Registered profile '<profile_id>'
   Tabby profile ID : <tabby_profile_id>
@@ -274,7 +276,7 @@ Start
 | `.venv/bin/python cli/main.py login list` | List existing login sessions |
 | `.venv/bin/python cli/main.py login export <session_id>` | Analyze session → write bundle JSON |
 | `.venv/bin/python cli/main.py login review <bundle.json>` | Print validation and review items |
-| `.venv/bin/python cli/main.py login register <bundle.json>` | Provision Application + STAGING ServiceProfile in Tabby |
+| `.venv/bin/python cli/main.py login register <bundle.json> [--as-template]` | Provision Application + STAGING ServiceProfile in Tabby (`--as-template`: also emit a tenant-wide App Template) |
 | `.venv/bin/python cli/main.py login credentials <bundle.json>` | Set username/password for a registered profile |
 | `.venv/bin/python cli/main.py login validate <bundle.json>` | Wait for a HEALTHY browser session for the profile |
 | `.venv/bin/python cli/main.py login import <session_id>` | Convenience: export + review + register |

@@ -78,13 +78,13 @@ Two reliability traps here (see [gaps.md](gaps.md)):
 
 ## 4. `execute_enabled` — the K8s landmine
 
-In K8s, the per-session worker Service (`{pod_name}-worker`) and the pod's `EXECUTE_ENABLED` env are both gated on `application.execute_enabled` (`apps/controller/src/reconcile.service.ts:224`, `pod-manager.service.ts:365`). NoUI never sets it, `autoProvisionFromTemplate` never sets it, and the template entity has no field for it — so it defaults to **`false`**. Locally this is masked (the spawned worker reads `EXECUTE_ENABLED=true` from `tabby/.env.local`; the API uses `LOCAL_WORKER_URL=http://localhost:8091`). On a real cloud Tabby the worker would get `EXECUTE_ENABLED=false` and no worker Service → `/execute/fetch` `502`s. **Any NoUI-provisioned app (direct or template) needs `execute_enabled: true` or the runtime is dead in cloud.**
+In K8s, the per-session worker Service (`{pod_name}-worker`) and the pod's `EXECUTE_ENABLED` env are both gated on `application.execute_enabled` (`apps/controller/src/reconcile.service.ts:224`, `pod-manager.service.ts:365`), which defaults to **`false`**. NoUI now sets `execute_enabled: true` on every app payload (`application_draft`, `_build_app_payload`, and the template emitter), and `session ensure` warns on a false app row (gaps.md A4). **Still broken cloud-side until a Tabby PR lands:** the App Template entity has no `execute_enabled` column and `autoProvisionFromTemplate` doesn't copy it, so per-user auto-provisioned apps still default to `false` → no worker Service → `/execute/fetch` `502`s. Locally this is masked (the spawned worker reads `EXECUTE_ENABLED=true` from `tabby/.env.local`; the API uses `LOCAL_WORKER_URL=http://localhost:8091`). See [gaps.md](gaps.md) A4 for the exact Tabby-side change.
 
 ---
 
-## 5. Runtime auth — and the tabby/agent-token vs http/platform-JWT split
+## 5. Runtime auth — execution mode vs auth mode (two orthogonal axes)
 
-The compiler emits one of two runtimes based on `--execution-mode` (default `tabby`):
+The compiler emits one of two runtimes based on `--execution-mode` (default `tabby`). **Auth mode is independent of execution mode:** both `tabby` (`execute.py`) and `http` (`auth.py`) now support `agent_token` *and* `platform_jwt` (gaps.md A2). Execution mode chooses *how* the request runs (inside the browser via `/execute/fetch`, or in-process httpx with extracted credentials); auth mode chooses *which token* authenticates to Tabby.
 
 > **Note on "CDP".** This mode was **formerly named `cdp`** and is now `tabby` — the old name implied a client-side CDP connection that no longer exists. Two things keep the "CDP" label and are unrelated to the execution mode:
 > - **The old client-side CDP-WebSocket fetch** (`cdp_adapter.py` → `noui_runtime/cdp.py`, `Runtime.evaluate` over `localhost:9222`) was **removed** — replaced by `execute_adapter.py` → `/execute/fetch` (plain HTTP; commits `ed0d393`, `e924000`).
@@ -93,8 +93,8 @@ The compiler emits one of two runtimes based on `--execution-mode` (default `tab
 ### Default: `tabby` mode → `noui_runtime/execute.py` (from `compiler/runtime/execute_adapter.py`)
 - Each generated op calls `execute_fetch(PROFILE_SLUG, url, method=…, headers=…, body=…)`.
 - `PROFILE_SLUG` and `BASE_URL` are **baked into the op at compile time** from `auth_plan.profile_slug` (`server_generator.py:363`, `operation_generator.py`). Not read from env or re-read from `auth_plan.json` at runtime.
-- Auth: `_get_agent_token()` on **every call** (uncached), `POST /auth/agent-token` with `TABBY_CLIENT_ID`/`TABBY_CLIENT_SECRET` (`execute_adapter.py:93`). **No `platform_jwt` branch** — it raises if those env vars are unset.
-- Surfaces `409` as the actionable "run `tabby session ensure --profile <slug>`" (`execute_adapter.py:168`) — but **not** `404` (the more common no-session case), which falls into an opaque error.
+- Auth: supports **both** modes (as of gaps.md A2). `_resolve_auth_mode()` honors explicit `NOUI_TABBY_AUTH_MODE`, else auto-detects `platform_jwt` when `ADOPT_*` are set, else `agent_token` (the default). `agent_token` → `POST /auth/agent-token` with `TABBY_CLIENT_ID`/`TABBY_CLIENT_SECRET`; `platform_jwt` → the two-step `POST /v1/users/api-token` → `POST /auth/token-exchange`, yielding a federated Tabby JWT that carries `owner_user_id`. Bearer tokens are cached per mode (`_get_tabby_bearer`), not re-fetched every call.
+- Surfaces `409` as the actionable "run `tabby session ensure --profile <slug>`" (`execute_adapter.py`) — but **not** `404` (the more common no-session case), which falls into an opaque error (gap B2, owned elsewhere).
 
 ### Legacy: `http` mode → `noui_runtime/auth.py` (from `compiler/runtime/auth_adapter.py`)
 - In-process `httpx`; `resolve_auth()` → `POST /credentials/request` for headers/cookies, merged into the outgoing request.
@@ -104,11 +104,12 @@ The compiler emits one of two runtimes based on `--execution-mode` (default `tab
 
 | Export mode | Runtime module | Token | Carries `owner_user_id`? | Can trigger template auto-provision? |
 |---|---|---|---|---|
-| `tabby` (default) | `execute.py` | agent_token (requires `TABBY_CLIENT_ID/SECRET`) | **No** | **No** |
+| `tabby` (default) + `agent_token` | `execute.py` | agent_token (requires `TABBY_CLIENT_ID/SECRET`) | **No** | **No** |
+| `tabby` (default) + `platform_jwt` | `execute.py` | platform JWT (federated) | **Yes** | **Yes** (per-user) |
 | `http` (legacy) + `agent_token` | `auth.py` | agent_token | No | No |
 | `http` (legacy) + `platform_jwt` | `auth.py` | platform JWT (federated) | **Yes** | **Yes** (per-user) |
 
-> **Cloud + default `tabby` = broken auth.** `tabby setup --cloud` writes `NOUI_TABBY_AUTH_MODE=platform_jwt`, but the default `tabby` runtime ignores it and demands `TABBY_CLIENT_ID/SECRET` (often unset in cloud) → hard failure with a confusing "set TABBY_CLIENT_ID/SECRET" error. Until `platform_jwt` is ported into `execute.py`, cloud users must export with `--execution-mode http` (or also set agent creds). This is the single biggest blocker to the tenant-wide story — covered in [gaps.md](gaps.md).
+> **Cloud + default `tabby` now works (gaps.md A2/A3).** The default `tabby` runtime honors `NOUI_TABBY_AUTH_MODE=platform_jwt` (the value `tabby setup --cloud` writes): it runs the platform→Tabby token-exchange and uses the federated, `owner_user_id`-carrying JWT, so cloud users no longer need `--execution-mode http`. `agent_token` remains the default for local/self-host. Pair this with a tenant-wide App Template (`tabby setup --cloud --template-bundle <bundle.json>`, or `noui tabby template create`, or `noui login register --as-template`) so the first federated request for a slug auto-provisions a per-user profile. The remaining end-to-end "hop 3" proof needs a live cloud Tabby — see [gaps.md](gaps.md).
 
 ### Two profile-selection mechanisms (don't conflate)
 - **Compiled tools** bake `PROFILE_SLUG` at export time — changing the profile means re-exporting (or hand-editing the op + `auth_plan.json`), **not** an env var.

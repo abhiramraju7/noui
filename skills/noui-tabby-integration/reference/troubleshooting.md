@@ -12,7 +12,7 @@ Symptom → cause → fix for the common failures. Most "my generated tool doesn
 | `404` even though I see the profile in the DB | The DB row exists but with a non-NULL `owner_user_id` (federated/auto-provisioned), and your token (agent or a *different* user) doesn't match. | An agent token resolves only NULL-owner shared rows; a federated token resolves only its own. Use the matching identity, or create a NULL-owner shared profile / a template. (`credentials.service.ts:228-240`) |
 | `POST /admin/profiles` returns `403` | Provisioning token isn't Admin. `/admin/profiles` is `@Roles('Admin')`. | Set `TABBY_ADMIN_TOKEN`, or `ADMIN_BOOTSTRAP_EMAIL/PASSWORD` in `tabby/.env.local` so `_get_admin_token` can log in. (`cli/main.py:639`) |
 | token-exchange / `--cloud` fails `401 Tenant not found` | The org's tenant doesn't exist in cloud Tabby. | The tenant (== platform org id) must be created/enabled in cloud first; it is a manual prereq. (`plans/noui/noui-cloud-tabby-auth-plan.md`) |
-| Ran `tabby setup --cloud` but no connection exists | `--cloud` only **verifies** the token round-trip; it provisions no App/Profile/Template. | Provision separately (today: local `tabby setup` / `login register`; the cloud template-emitter is unbuilt — see [gaps.md](gaps.md) A1/A3). |
+| Ran `tabby setup --cloud` but no connection exists | Bare `--cloud` only **verifies** the token round-trip; it provisions nothing. | Re-run with `--template-bundle <bundle.json>` to provision a tenant-wide App Template, or run `noui tabby template create <bundle.json>` / `noui login register --as-template` (gaps.md A1/A3). For local, `tabby setup` / `login register`. |
 
 ## Live session
 
@@ -29,7 +29,7 @@ Symptom → cause → fix for the common failures. Most "my generated tool doesn
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `502 Worker unreachable` locally | `LOCAL_WORKER_URL` unset → API tries the K8s DNS name, which doesn't resolve locally. | Set `LOCAL_WORKER_URL=http://localhost:8091` in the API env. (gap B3) |
-| `502` / no execute routes after a clean install | Worker started without `EXECUTE_ENABLED=true` (routes only mount when true), and the app row has `execute_enabled=false`. | Set `EXECUTE_ENABLED=true` in `tabby/.env.local`; for cloud/K8s the **app** must have `execute_enabled: true` (NoUI never sets it — gap A4). (`health-server.ts:33`, `reconcile.service.ts:224`) |
+| `502` / no execute routes after a clean install | Worker started without `EXECUTE_ENABLED=true` (routes only mount when true), and the app row has `execute_enabled=false`. | Set `EXECUTE_ENABLED=true` in `tabby/.env.local`. NoUI now sets `execute_enabled: true` on new app payloads (gaps.md A4), and `session ensure` warns on a false app row — but a **pre-existing** app or a **per-user auto-provisioned** cloud app may still be false (the Tabby-side template `execute_enabled` copy is pending). Re-provision, or patch the app. (`health-server.ts:33`, `reconcile.service.ts:224`) |
 | `429 rate limit` | >60/min (fetch) or >120/min (browser) per profile. | Throttle; the window is 60s, per-profile. |
 | `504` on a long call | `timeout_ms` (≤60s) exceeded, or near the worker proxy token's 2-min ceiling. | Keep single calls well under 2 min; chunk long operations; ensure API/worker clock sync. |
 
@@ -37,8 +37,8 @@ Symptom → cause → fix for the common failures. Most "my generated tool doesn
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Cloud-configured tool fails "TABBY_CLIENT_ID and TABBY_CLIENT_SECRET must be set" | Default `tabby` runtime is agent-token-only and ignores `NOUI_TABBY_AUTH_MODE=platform_jwt`. | Export with `--execution-mode http` (honors `platform_jwt`), or also set `TABBY_CLIENT_ID/SECRET`. Root fix: port `platform_jwt` into `execute.py` (gap A2). |
-| Federated user never gets their own profile | The path that auto-provisions is `/credentials/request` with an `owner_user_id`-bearing token; the default `tabby` execute path can't trigger it. | Use `http` mode (platform_jwt) so the token carries `owner_user_id`, and ensure a tenant App Template exists for the slug (unbuilt — gap A1). |
+| Cloud-configured tool fails "TABBY_CLIENT_ID and TABBY_CLIENT_SECRET must be set" | Runtime resolved to `agent_token` mode but no agent creds are set — usually `ADOPT_*` aren't all present and `NOUI_TABBY_AUTH_MODE` isn't `platform_jwt`. | The default `tabby` runtime now supports `platform_jwt` (gaps.md A2): set `ADOPT_API_URL`/`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` (or `NOUI_TABBY_AUTH_MODE=platform_jwt`), e.g. via `tabby setup --cloud`. No `--execution-mode http` workaround needed. |
+| Federated user never gets their own profile | The default `tabby` execute path now carries `owner_user_id` (platform_jwt), but a matching App Template must exist for the slug, and (cloud) the auto-provisioned app needs `execute_enabled`. | Ensure `platform_jwt` mode, provision a template (`tabby template create` / `login register --as-template` / `tabby setup --cloud --template-bundle`), and apply the pending Tabby-side `execute_enabled` change (gaps.md A1/A4). Note: bare `/execute/fetch` does **not** auto-provision — the trigger is `/credentials/request`; ensure the profile is provisioned/warmed first. |
 
 ## Credentials content
 
@@ -67,7 +67,7 @@ Tool fails at runtime
   ├─ 409 "no worker pod"         → session not scheduled → retry / re-ensure
   ├─ 409 "driven by another"     → /execute/browser lock → serialize calls
   ├─ 502 unreachable             → LOCAL_WORKER_URL unset OR EXECUTE_ENABLED=false (app/worker)
-  ├─ "TABBY_CLIENT_ID must be set" (cloud) → default tabby mode can't do platform_jwt → export --execution-mode http
+  ├─ "TABBY_CLIENT_ID must be set" (cloud) → mode resolved to agent_token → set ADOPT_* / NOUI_TABBY_AUTH_MODE=platform_jwt (tabby setup --cloud)
   ├─ empty cookies               → credential_types string-array bug → Fix A SQL / fix emit (D1)
   └─ target 401/403 in body      → HEALTHY ≠ authenticated → pre-warm + verify auth
 ```

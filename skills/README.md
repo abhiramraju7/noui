@@ -100,7 +100,7 @@ Fully automated workflow recording: the agent drives a real Chrome browser throu
 start backend → noui autopilot start
 → agent drives browser (get_page_summary → click/type/navigate)
 → noui autopilot stop → noui autopilot export
-  (defaults to CDP execution mode; pass --execution-mode http for legacy path)
+  (defaults to tabby execution mode; pass --execution-mode http for legacy path)
 ```
 
 Use when: you want hands-off recording of a site without manually operating the Chrome extension. Prereq: `/noui-setup` complete and Chrome open with the NoUI extension loaded.
@@ -115,12 +115,12 @@ Output: `server_id` → used in `/noui-generalize` or `/noui-generate-mcp`
 
 Make generated MCP tools **work** and **usable**. Covers two dimensions:
 
-1. **Execution strategy** — diagnose bot detection (Akamai/Cloudflare 429s), fix Tabby credential_types DB bugs, promote profiles to ACTIVE, HITL login fallback when CloakBrowser fails, and rewrite operations to use CDP browser-side fetch (bypasses TLS fingerprinting).
+1. **Execution strategy** — diagnose bot detection (Akamai/Cloudflare 429s), fix Tabby credential_types DB bugs, promote profiles to ACTIVE, HITL login fallback when CloakBrowser fails, and rewrite operations to use browser-side fetch via Tabby (bypasses TLS fingerprinting).
 2. **Interface cleanup** — rename raw API params (`f_sid`, `bl`, `reqid`) to natural-language names (`origin`, `destination`, `departure_date`) so any agent can invoke tools without domain knowledge.
 
 ```
 Phase 0: Test tool → works? skip to interface cleanup
-  ├─ 429 / bot detection → CDP fetch rewrite
+  ├─ 429 / bot detection → execute-fetch rewrite
   ├─ Empty credentials → fix credential_types DB format
   ├─ No active profile → promote STAGING → ACTIVE
   └─ Login didn't work → HITL login via chrome://inspect

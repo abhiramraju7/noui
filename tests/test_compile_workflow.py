@@ -90,7 +90,7 @@ def _compile(
     profile_slug: str = "",
     profile_db_id: str = "",
     tabby_profile_id: str = "",
-    execution_mode: str = "cdp",
+    execution_mode: str = "tabby",
 ) -> tuple[dict, dict[str, str]]:
     """Run compile_workflow into a temp dir; return (manifest, {rel_path: content})."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -210,7 +210,7 @@ class TestStaticApiKeyApp:
         )
 
     def test_operations_use_execute_fetch(self) -> None:
-        """Default execution mode (cdp) wires operations through noui_runtime.execute."""
+        """Default execution mode (tabby) wires operations through noui_runtime.execute."""
         for path, content in self.files.items():
             if (
                 path.startswith("operations/")

@@ -1443,7 +1443,7 @@ def cmd_workflow_export(args: argparse.Namespace) -> int:
     profile_db_id: str = getattr(args, "profile_db_id", "")
     capture_session_id: str = getattr(args, "capture_session", "")
     description_override: str = getattr(args, "description_override", "")
-    execution_mode: str = getattr(args, "execution_mode", "cdp")
+    execution_mode: str = getattr(args, "execution_mode", "tabby")
     do_verify: bool = getattr(args, "verify", False)
 
     if target not in ("mcp", "skill", "both"):
@@ -1861,7 +1861,7 @@ def cmd_autopilot_export(args: argparse.Namespace) -> int:
     wf_id = args.workflow_session_id
     cs_id = args.capture_session_id
     profile_slug = getattr(args, "profile_slug", "")
-    execution_mode = getattr(args, "execution_mode", "cdp")
+    execution_mode = getattr(args, "execution_mode", "tabby")
 
     params = [f"capture_session_id={cs_id}", "as=mcp", f"execution_mode={execution_mode}"]
     if profile_slug:
@@ -2435,23 +2435,6 @@ def cmd_mcp_status(args: argparse.Namespace) -> int:
         print(f"  Status    : {_green(f'running (PID {pid})')}")
     else:
         print(f"  Status    : {_red('stopped')}")
-
-    # Check CDP accessibility for servers that use the browser-via-CDP pattern
-    ops_dir = manifest_path.parent / "operations"
-    uses_cdp = (
-        any(
-            "CDP_LIST_URL" in op_file.read_text(encoding="utf-8", errors="ignore")
-            for op_file in ops_dir.glob("*.py")
-        )
-        if ops_dir.exists()
-        else False
-    )
-    if uses_cdp:
-        if _cdp_is_reachable():
-            print(f"  CDP       : {_green('reachable (localhost:9222)')}")
-        else:
-            print(f"  CDP       : {_red('not reachable (localhost:9222)')}")
-            print(_yellow("             Run: noui tabby session ensure"))
 
     return 0
 
@@ -4830,11 +4813,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     wf_export.add_argument(
         "--execution-mode",
-        default="cdp",
-        choices=["cdp", "http"],
+        default="tabby",
+        choices=["tabby", "http"],
         dest="execution_mode",
         help=(
-            "Execution strategy: 'cdp' (default, runs inside Tabby's browser) "
+            "Execution strategy: 'tabby' (default, runs inside Tabby's browser) "
             "or 'http' (legacy httpx + resolve_auth)"
         ),
     )
@@ -4996,11 +4979,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap_export.add_argument("--profile-slug", default="", help="Tabby profile slug for auth")
     ap_export.add_argument(
         "--execution-mode",
-        default="cdp",
-        choices=["cdp", "http"],
+        default="tabby",
+        choices=["tabby", "http"],
         dest="execution_mode",
         help=(
-            "Execution strategy: 'cdp' (default, runs inside Tabby's browser) "
+            "Execution strategy: 'tabby' (default, runs inside Tabby's browser) "
             "or 'http' (legacy httpx + resolve_auth)"
         ),
     )

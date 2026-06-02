@@ -49,11 +49,12 @@ Computer-use agents simulate humans:
 ### Execution
 
 Generated tools run from **inside** the authenticated Tabby browser, not from a
-Python HTTP client. Each operation opens a WebSocket to Tabby's CDP endpoint
-(`localhost:9222`), locates the tab for the target domain, and calls
-`fetch(url, {credentials: 'include'})` via `Runtime.evaluate`. The real browser's
-TLS fingerprint and cookies are used — no credential extraction, and no
-Akamai/Cloudflare false positives.
+Python HTTP client. By default (the `tabby` execution mode) each operation calls
+Tabby's `POST /execute/fetch` endpoint over plain HTTP; the Tabby worker runs
+`fetch(url, {credentials: 'include'})` inside the real authenticated browser, so
+the browser's TLS fingerprint and cookies are used — no credential extraction,
+and no Akamai/Cloudflare false positives. There is no WebSocket or CDP-port
+access from the NoUI side.
 
 The legacy Python-side path (`httpx` + `resolve_auth()`) is still available for
 server-to-server APIs that aren't reachable from the browser origin; opt in

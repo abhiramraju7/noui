@@ -7,8 +7,9 @@ authenticated browser via the `POST /execute/fetch` HTTP endpoint on the Tabby
 API. Cookies ride on `credentials: 'include'`; the real browser's TLS
 fingerprint is preserved.
 
-Replaces the direct CDP WebSocket approach (cdp_adapter.py). No WebSocket,
-no `websockets` dependency — plain HTTP via httpx.
+Requests run over plain HTTP via httpx — there is no client-side CDP or
+WebSocket connection. The Tabby worker runs the actual fetch inside the
+authenticated browser server-side.
 """
 
 from __future__ import annotations

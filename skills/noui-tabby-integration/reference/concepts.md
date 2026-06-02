@@ -52,7 +52,7 @@ A tenant-scoped **reusable blueprint** for an App+Profile. The provisioning prim
 - `credential_ref_default` (default `'manual:'`) and `idle_shutdown_seconds` — **accepted but inert**: `autoProvisionFromTemplate` never reads them (`credentials.service.ts:299-330`).
 - FK → `tenants(id) ON DELETE CASCADE`; `UNIQUE(tenant_id, name)`; indexed on `(tenant_id, profile_name_pattern)`.
 
-There is **no `execute_enabled`** field on the template (relevant gap — see [gaps.md](gaps.md)).
+There is **no `execute_enabled`** field on the template (relevant gap — see the Tabby hardening plan, A4-tabby).
 
 ---
 
@@ -70,7 +70,7 @@ There is **no `execute_enabled`** field on the template (relevant gap — see [g
 
 The `service_profiles.credential_types` column is a **shape declaration only** — which cookies/headers to return + volatility — never secret values.
 
-> **The `credential_types` cookie-shape bug.** The Tabby consumer iterates `credential_types.cookies` expecting **objects** `[{name, volatility}]` (`credentials.service.ts:629`). NoUI emits a **plain string array of cookie names** (`compiler/login/tabby_draft_generator.py:543` + `auth_plan.py:159`). Result: every cookie comes back with `name:""`, `value:""`. Tabby stores the DTO verbatim (`profiles.service.ts:64`), so the defect is on the **NoUI emit side**, and it recurs on every `login register`. Headers tolerate both string and object forms; cookies do **not**. (Documented as `/noui-generalize` "Fix A", but framed as a Tabby bug — see [gaps.md](gaps.md).)
+> **The `credential_types` cookie-shape bug.** The Tabby consumer iterates `credential_types.cookies` expecting **objects** `[{name, volatility}]` (`credentials.service.ts:629`). NoUI emits a **plain string array of cookie names** (`compiler/login/tabby_draft_generator.py:543` + `auth_plan.py:159`). Result: every cookie comes back with `name:""`, `value:""`. Tabby stores the DTO verbatim (`profiles.service.ts:64`), so the defect is on the **NoUI emit side**, and it recurs on every `login register`. Headers tolerate both string and object forms; cookies do **not**. (Documented as `/noui-generalize` "Fix A", but framed as a Tabby bug — see the gap-closure plan.)
 
 ---
 
@@ -117,13 +117,13 @@ Tabby is both an OAuth2 authorization server (mints HS256 JWTs) and a resource s
 | `owner_user_id` | **None** (`auth.service.ts:183`) | **Set** from the IdP `userId`/`sub` claim (`token-exchange.service.ts:138,188`) |
 | Reach | **Tenant-wide** for its `allowed_profiles` (owner filter skipped) | **Per-user** (owner-scoped); the only token that can trigger template auto-provisioning |
 | Role | `Agent` (gated to `allowed_profiles` on every action) | `Admin` if email domain ∈ `idp.admin_domains`, else `default_role`/`Operator` |
-| NoUI uses it for | Default mode for the **`tabby` runtime** (`/execute/fetch`) and the autopilot browser driver | Both the **`tabby`** runtime (when `platform_jwt` is selected — gaps.md A2) and the legacy `--execution-mode http` runtime, plus `tabby setup --cloud` |
+| NoUI uses it for | Default mode for the **`tabby` runtime** (`/execute/fetch`) and the autopilot browser driver | Both the **`tabby`** runtime (when `platform_jwt` is selected — the gap-closure plan A2) and the legacy `--execution-mode http` runtime, plus `tabby setup --cloud` |
 
 Tenancy: `tenant_id` is read from the verified JWT, never the request body for normal callers. `tenants.id` is a **varchar** so a Frontegg org id can be used directly. Token-exchange can auto-create a tenant if `idp.allow_auto_provision` is set; otherwise the tenant **must already exist** or token-exchange returns `Tenant not found` (a known cloud prerequisite). The IdP is a **global singleton** (no `tenant_id` column); multi-tenant routing is via the `tenant_id_claim` on the incoming JWT.
 
 **Agent clients** (`agent_clients` table) are registered only by an Admin (`POST /admin/agent-clients`), carry `allowed_profiles`, and the plaintext secret is returned once. `noui tabby setup` (local) provisions a `noui` agent client for the runtime.
 
-> **`agent_assertion`** is a third token-exchange mode: an agent JWT + `target_user_id` mints a federated (owner-scoped) token on behalf of a user. This is the intended bridge between an agent and per-user profiles — but it currently validates very little about `target_user_id` (see the security findings in [gaps.md](gaps.md)).
+> **`agent_assertion`** is a third token-exchange mode: an agent JWT + `target_user_id` mints a federated (owner-scoped) token on behalf of a user. This is the intended bridge between an agent and per-user profiles — but it currently validates very little about `target_user_id` (see the security findings in the Tabby hardening plan).
 
 ---
 

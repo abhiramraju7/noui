@@ -38,7 +38,7 @@ Why this module exists:
 
 Requires:
   - A running Tabby session for the target profile.
-  - TABBY_API_HOST / TABBY_API_URL env var (or .env) pointing to the Tabby API.
+  - TABBY_API_URL env var (or .env) pointing to the Tabby API.
   - Agent credentials (TABBY_CLIENT_ID / TABBY_CLIENT_SECRET) for token exchange.
 """
 from __future__ import annotations
@@ -87,11 +87,7 @@ _load_env()
 
 def _tabby_api_host() -> str:
     """Resolve the Tabby API base URL from environment."""
-    return (
-        os.environ.get("TABBY_API_HOST")
-        or os.environ.get("TABBY_API_URL")
-        or "http://localhost:8000"
-    )
+    return os.environ.get("TABBY_API_URL") or "http://localhost:8000"
 
 
 async def _get_agent_token() -> str:

@@ -33,17 +33,17 @@ class TestResolveTabbyApiHost:
         """Empty / whitespace-only values fall back to the default rather
         than producing an unusable bare 'http://' URL."""
         for raw in ("", "   ", "\t"):
-            assert resolve_tabby_api_host(env={"TABBY_API_HOST": raw}) == DEFAULT_TABBY_API_HOST
+            assert resolve_tabby_api_host(env={"TABBY_API_URL": raw}) == DEFAULT_TABBY_API_HOST
 
     def test_explicit_value_passes_through(self) -> None:
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "http://tabby.example:8080"})
+            resolve_tabby_api_host(env={"TABBY_API_URL": "http://tabby.example:8080"})
             == "http://tabby.example:8080"
         )
 
     def test_https_scheme_preserved(self) -> None:
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "https://tabby.example"})
+            resolve_tabby_api_host(env={"TABBY_API_URL": "https://tabby.example"})
             == "https://tabby.example"
         )
 
@@ -52,31 +52,30 @@ class TestResolveTabbyApiHost:
         We normalise this so urllib.request doesn't raise an opaque
         ``unknown url type`` error downstream."""
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "localhost:8080"})
+            resolve_tabby_api_host(env={"TABBY_API_URL": "localhost:8080"})
             == "http://localhost:8080"
         )
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "10.0.0.5:9000"})
-            == "http://10.0.0.5:9000"
+            resolve_tabby_api_host(env={"TABBY_API_URL": "10.0.0.5:9000"}) == "http://10.0.0.5:9000"
         )
 
     def test_trailing_slash_stripped(self) -> None:
         """Callers concatenate path strings starting with '/', so the host
         must not end with one — keeps the existing _tabby_http() shape valid."""
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "http://localhost:8080/"})
+            resolve_tabby_api_host(env={"TABBY_API_URL": "http://localhost:8080/"})
             == "http://localhost:8080"
         )
 
     def test_surrounding_whitespace_stripped(self) -> None:
         """Common typo when copy-pasting from docs."""
         assert (
-            resolve_tabby_api_host(env={"TABBY_API_HOST": "  http://localhost:8080  "})
+            resolve_tabby_api_host(env={"TABBY_API_URL": "  http://localhost:8080  "})
             == "http://localhost:8080"
         )
 
     def test_defaults_to_os_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TABBY_API_HOST", "http://from-os-env:1234")
+        monkeypatch.setenv("TABBY_API_URL", "http://from-os-env:1234")
         assert resolve_tabby_api_host() == "http://from-os-env:1234"
 
     def test_default_constant_value(self) -> None:
@@ -92,8 +91,8 @@ class TestResolveTabbyApiHost:
 
 class TestLoadEnvFiles:
     def test_populates_missing_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / ".env").write_text("TABBY_API_HOST=http://from-dotenv:8090\n")
-        monkeypatch.delenv("TABBY_API_HOST", raising=False)
+        (tmp_path / ".env").write_text("TABBY_API_URL=http://from-dotenv:8090\n")
+        monkeypatch.delenv("TABBY_API_URL", raising=False)
         load_env_files(tmp_path)
         assert resolve_tabby_api_host() == "http://from-dotenv:8090"
 
@@ -101,9 +100,9 @@ class TestLoadEnvFiles:
         """``override=False`` semantics — if the user already exported the
         variable in their shell, the dotenv value must NOT clobber it. This
         matches backend/config.py and is the principle of least surprise for
-        anyone running ``TABBY_API_HOST=... noui ...``."""
-        (tmp_path / ".env").write_text("TABBY_API_HOST=http://from-dotenv:8090\n")
-        monkeypatch.setenv("TABBY_API_HOST", "http://from-shell:7000")
+        anyone running ``TABBY_API_URL=... noui ...``."""
+        (tmp_path / ".env").write_text("TABBY_API_URL=http://from-dotenv:8090\n")
+        monkeypatch.setenv("TABBY_API_URL", "http://from-shell:7000")
         load_env_files(tmp_path)
         assert resolve_tabby_api_host() == "http://from-shell:7000"
 
@@ -112,7 +111,7 @@ class TestLoadEnvFiles:
     ) -> None:
         """When no .env exists, nothing is added to os.environ and the
         default is used. Nothing should raise."""
-        monkeypatch.delenv("TABBY_API_HOST", raising=False)
+        monkeypatch.delenv("TABBY_API_URL", raising=False)
         load_env_files(tmp_path)
         assert resolve_tabby_api_host() == DEFAULT_TABBY_API_HOST
 
@@ -121,8 +120,8 @@ class TestLoadEnvFiles:
     ) -> None:
         """If python-dotenv is not installed, the helper must silently
         no-op rather than crash the CLI on import."""
-        (tmp_path / ".env").write_text("TABBY_API_HOST=http://from-dotenv:8090\n")
-        monkeypatch.delenv("TABBY_API_HOST", raising=False)
+        (tmp_path / ".env").write_text("TABBY_API_URL=http://from-dotenv:8090\n")
+        monkeypatch.delenv("TABBY_API_URL", raising=False)
 
         real_import = (
             __builtins__["__import__"]
@@ -143,8 +142,8 @@ class TestLoadEnvFiles:
     def test_idempotent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Calling twice in the same process must not raise or change the
         resolved value."""
-        (tmp_path / ".env").write_text("TABBY_API_HOST=http://from-dotenv:8090\n")
-        monkeypatch.delenv("TABBY_API_HOST", raising=False)
+        (tmp_path / ".env").write_text("TABBY_API_URL=http://from-dotenv:8090\n")
+        monkeypatch.delenv("TABBY_API_URL", raising=False)
         load_env_files(tmp_path)
         load_env_files(tmp_path)
         assert resolve_tabby_api_host() == "http://from-dotenv:8090"

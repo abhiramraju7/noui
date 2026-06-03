@@ -17,7 +17,7 @@ The autopilot has two browser driver modes, selected automatically by environmen
 
 | Mode | When | Prerequisites |
 |------|------|---------------|
-| **Tabby** (headless, no extension) | `TABBY_API_HOST` + `TABBY_CLIENT_ID` + `TABBY_PROFILE_ID` are set | A healthy Tabby session for the profile. No Chrome extension needed. |
+| **Tabby** (headless, no extension) | `TABBY_API_URL` + `TABBY_CLIENT_ID` + `TABBY_PROFILE_ID` are set | A healthy Tabby session for the profile. No Chrome extension needed. |
 | **Extension** (local Chrome) | Tabby env vars not set | Chrome with the NoUI extension loaded and connected to `localhost:8002`. `/noui-setup` must be complete. |
 
 In Tabby mode, browser commands go to Tabby's `POST /execute/browser` endpoint — the worker drives Playwright directly. HAR capture is server-side (`har_start`/`har_stop`), no extension capture session needed. This enables headless/server-side autopilot for agent-builder pipelines.

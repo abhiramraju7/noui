@@ -87,20 +87,35 @@ class AuthVerifier:
         tabby_admin_token: str = "",
         tabby_client_id: str = "",
         tabby_client_secret: str = "",
+        adopt_api_url: str = "",
+        adopt_client_id: str = "",
+        adopt_client_secret: str = "",
+        auth_mode: str = "",
         max_repair_attempts: int = 2,
     ) -> None:
         self.auth_plan = auth_plan
         self.server_dir = Path(server_dir)
         self.tabby_api_host = (
-            tabby_api_host
-            or os.environ.get("TABBY_API_URL", "")
-            or os.environ.get("TABBY_API_HOST", "http://localhost:8080")
+            tabby_api_host or os.environ.get("TABBY_API_URL", "") or "http://localhost:8080"
         )
         self.tabby_admin_token = tabby_admin_token or os.environ.get("TABBY_ADMIN_TOKEN", "")
         self.tabby_client_id = tabby_client_id or os.environ.get("TABBY_CLIENT_ID", "")
         self.tabby_client_secret = tabby_client_secret or os.environ.get("TABBY_CLIENT_SECRET", "")
+        # Platform (Adopt) credentials for the cloud token-exchange flow.
+        self.adopt_api_url = (adopt_api_url or os.environ.get("ADOPT_API_URL", "")).rstrip("/")
+        self.adopt_client_id = adopt_client_id or os.environ.get("ADOPT_CLIENT_ID", "")
+        self.adopt_client_secret = adopt_client_secret or os.environ.get("ADOPT_CLIENT_SECRET", "")
+        self.auth_mode = (auth_mode or os.environ.get("NOUI_TABBY_AUTH_MODE", "")).strip().lower()
         self.max_repair_attempts = max_repair_attempts
         self._repair_count = 0
+
+    def _resolve_auth_mode(self) -> str:
+        """Pick the Tabby auth flow: explicit auth_mode wins, else auto-detect."""
+        if self.auth_mode:
+            return self.auth_mode
+        if self.adopt_api_url and self.adopt_client_id and self.adopt_client_secret:
+            return "platform_jwt"
+        return "agent_token"
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -186,15 +201,21 @@ class AuthVerifier:
                 suggested_repairs=[{"action": "run_command", "command": "noui tabby start"}],
             )
 
-        # Step 2: Agent credentials valid?
+        # Step 2: Auth credentials valid? (agent-token locally, platform-JWT in cloud)
         try:
-            agent_token = await self._get_agent_token()
+            bearer = await self._get_tabby_bearer()
         except RuntimeError as exc:
+            if self._resolve_auth_mode() == "platform_jwt":
+                missing = ["ADOPT_API_URL", "ADOPT_CLIENT_ID", "ADOPT_CLIENT_SECRET"]
+                repair_cmd = "noui tabby setup --cloud"
+            else:
+                missing = ["TABBY_CLIENT_ID", "TABBY_CLIENT_SECRET"]
+                repair_cmd = "noui tabby setup"
             return VerificationResult(
                 "NEEDS_SECRET",
                 message=str(exc),
-                missing_artifacts=["TABBY_CLIENT_ID", "TABBY_CLIENT_SECRET"],
-                suggested_repairs=[{"action": "run_command", "command": "noui tabby setup"}],
+                missing_artifacts=missing,
+                suggested_repairs=[{"action": "run_command", "command": repair_cmd}],
             )
 
         profile_slug = self.auth_plan.get("profile_slug", "")
@@ -204,7 +225,7 @@ class AuthVerifier:
 
         # Step 4: Request credentials
         try:
-            creds = await self._request_credentials(profile_slug, agent_token)
+            creds = await self._request_credentials(profile_slug, bearer)
         except Exception as exc:
             return VerificationResult(
                 "UNSUPPORTED",
@@ -226,7 +247,7 @@ class AuthVerifier:
             if self._repair_count < self.max_repair_attempts:
                 repair_result = await self._repair_empty_credentials(
                     profile_slug=profile_slug,
-                    agent_token=agent_token,
+                    agent_token=bearer,
                     missing_headers=missing_headers,
                     missing_cookies=missing_cookies,
                     session_healthy=session_healthy,
@@ -345,8 +366,8 @@ class AuthVerifier:
         if strategy == "tabby_credentials":
             profile_slug = self.auth_plan.get("profile_slug", "")
             try:
-                agent_token = await self._get_agent_token()
-                creds = await self._request_credentials(profile_slug, agent_token)
+                bearer = await self._get_tabby_bearer()
+                creds = await self._request_credentials(profile_slug, bearer)
                 if creds.get("headers") or creds.get("cookies"):
                     return VerificationResult(
                         "PASS",
@@ -416,12 +437,62 @@ class AuthVerifier:
             raise RuntimeError(f"POST /auth/agent-token returned no token: {data}")
         return token
 
-    async def _request_credentials(self, profile_slug: str, agent_token: str) -> dict:
+    async def _get_platform_jwt(self) -> str:
+        """Cloud flow step 1: platform client credentials → platform JWT via adoptwebui."""
+        if not self.adopt_api_url:
+            raise RuntimeError(
+                "Missing ADOPT_API_URL for platform_jwt auth mode.\n"
+                "Run `noui tabby setup --cloud` or set ADOPT_API_URL in noui/.env."
+            )
+        if not self.adopt_client_id or not self.adopt_client_secret:
+            raise RuntimeError(
+                "Missing ADOPT_CLIENT_ID or ADOPT_CLIENT_SECRET for platform_jwt auth mode.\n"
+                "Run `noui tabby setup --cloud` or set these in noui/.env."
+            )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.adopt_api_url}/v1/users/api-token",
+                json={"client_id": self.adopt_client_id, "secret": self.adopt_client_secret},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        token = data.get("access_token", "")
+        if not token:
+            raise RuntimeError(f"Platform /v1/users/api-token returned no access_token: {data}")
+        return token
+
+    async def _get_platform_tabby_token(self) -> str:
+        """Cloud flow step 2: platform JWT → Tabby JWT via /auth/token-exchange."""
+        platform_jwt = await self._get_platform_jwt()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.tabby_api_host}/auth/token-exchange",
+                json={"subject_token": platform_jwt, "subject_token_type": "oidc_jwt"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        token = data.get("access_token", "")
+        if not token:
+            raise RuntimeError(f"Tabby /auth/token-exchange returned no access_token: {data}")
+        return token
+
+    async def _get_tabby_bearer(self) -> str:
+        """Return a Tabby bearer token for the active auth mode."""
+        mode = self._resolve_auth_mode()
+        if mode == "platform_jwt":
+            return await self._get_platform_tabby_token()
+        if mode == "agent_token":
+            return await self._get_agent_token()
+        raise RuntimeError(
+            f"Unknown NOUI_TABBY_AUTH_MODE {mode!r} — expected 'agent_token' or 'platform_jwt'."
+        )
+
+    async def _request_credentials(self, profile_slug: str, bearer: str) -> dict:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{self.tabby_api_host}/credentials/request",
                 json={"profile_id": profile_slug},
-                headers={"Authorization": f"Bearer {agent_token}"},
+                headers={"Authorization": f"Bearer {bearer}"},
             )
             resp.raise_for_status()
             data = resp.json()

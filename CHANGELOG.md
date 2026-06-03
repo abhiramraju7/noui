@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cloud Tabby auth via platform token-exchange.** Generated MCP servers/Skills
+  and the compile-time auth verifier can authenticate against a cloud/staging
+  Tabby by exchanging a platform Personal Access Token for a platform JWT
+  (`POST /v1/users/api-token`), then for a Tabby JWT (`POST /auth/token-exchange`),
+  in addition to the local `/auth/agent-token` flow. The flow is selected by
+  `NOUI_TABBY_AUTH_MODE` (auto-detects `platform_jwt` when `ADOPT_API_URL` +
+  `ADOPT_CLIENT_ID` + `ADOPT_CLIENT_SECRET` are set, else `agent_token`). The
+  exchanged bearer is cached in-process until shortly before expiry.
+- `noui tabby setup --cloud` — verifies the PAT → platform-JWT → Tabby round-trip
+  and writes the cloud env vars to `.env` (no local Tabby or admin token needed).
+
 ### Changed
 
+- **BREAKING: `TABBY_API_HOST` and `TABBY_API_URL` collapsed into a single
+  `TABBY_API_URL`.** Every env read now uses `TABBY_API_URL`; `TABBY_API_HOST` is
+  no longer read (no fallback). Rename it in your `.env`/environment.
 - **Default execution mode for generated MCP servers and Skills is now CDP
   browser execution** (`--execution-mode cdp`). Generated operations open a
   WebSocket to Tabby's CDP endpoint (`localhost:9222`), locate the tab for the

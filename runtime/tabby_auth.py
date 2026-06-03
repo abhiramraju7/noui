@@ -13,7 +13,7 @@ import urllib.request
 
 import httpx
 
-TABBY_API_HOST = os.environ.get("TABBY_API_HOST", "http://localhost:8080")
+TABBY_API_HOST = os.environ.get("TABBY_API_URL", "http://localhost:8080")
 
 
 async def get_auth_headers(profile_id: str) -> dict:

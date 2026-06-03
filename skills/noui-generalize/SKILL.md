@@ -87,7 +87,7 @@ import asyncio, json, httpx, os
 
 async def test():
     # Get agent token
-    api = os.environ.get("TABBY_API_HOST", "http://localhost:8000")
+    api = os.environ.get("TABBY_API_URL", "http://localhost:8000")
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(f"{api}/auth/agent-token", json={
             "client_id": os.environ["TABBY_CLIENT_ID"],

@@ -128,7 +128,9 @@ def generate_wdl(
             detected_params,
             step_idx,
             dep_substitutions=dep_substitutions,
-            profile_slug=profile_slug, auth_hosts=auth_hosts, site_domain=site_domain,
+            profile_slug=profile_slug,
+            auth_hosts=auth_hosts,
+            site_domain=site_domain,
         )
 
         # Add description from narration if available
@@ -212,6 +214,7 @@ def _registrable_domain(host: str) -> str:
 
 
 # ── Tabby auth-host detection ─────────────────────────────────────────
+
 
 def _detect_auth_hosts(har_entries: list[dict]) -> set[str]:
     """Return the set of hosts whose requests carry an auth indicator.

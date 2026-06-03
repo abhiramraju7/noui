@@ -39,8 +39,12 @@ def _step_for(result: dict, needle: str) -> dict:
 def test_first_party_cookie_host_routed_even_without_auth_header():
     # The recorded site authenticates via cookies (no Authorization header) —
     # the anti-bot case. It must still be routed through Tabby.
-    entry = _entry("https://www.expedia.com/api/search?q=nyc", [{"name": "Cookie", "value": "sess=abc"}])
-    result = generate_wdl(har_entries=[entry], base_url="https://www.expedia.com/", profile_slug="exp")
+    entry = _entry(
+        "https://www.expedia.com/api/search?q=nyc", [{"name": "Cookie", "value": "sess=abc"}]
+    )
+    result = generate_wdl(
+        har_entries=[entry], base_url="https://www.expedia.com/", profile_slug="exp"
+    )
     step = _rest_steps(result)[0]
     assert step.get("via") == "tabby"
     assert step.get("tabby_profile_id") == "exp"
@@ -48,21 +52,25 @@ def test_first_party_cookie_host_routed_even_without_auth_header():
 
 def test_subdomain_of_recorded_site_is_first_party():
     entry = _entry("https://api.expedia.com/graphql", [])
-    result = generate_wdl(har_entries=[entry], base_url="https://www.expedia.com/", profile_slug="exp")
+    result = generate_wdl(
+        har_entries=[entry], base_url="https://www.expedia.com/", profile_slug="exp"
+    )
     assert _rest_steps(result)[0].get("via") == "tabby"
 
 
 def test_third_party_non_auth_host_not_routed():
     result = generate_wdl(
         har_entries=[
-            _entry("https://www.expedia.com/api/search?q=nyc", [{"name": "Cookie", "value": "s=1"}]),
+            _entry(
+                "https://www.expedia.com/api/search?q=nyc", [{"name": "Cookie", "value": "s=1"}]
+            ),
             _entry("https://analytics.tracker.com/collect?id=1", []),
         ],
         base_url="https://www.expedia.com/",
         profile_slug="exp",
     )
-    assert _step_for(result, "{{base_url}}").get("via") == "tabby"          # first-party
-    assert "via" not in _step_for(result, "tracker.com")                     # third-party, no auth
+    assert _step_for(result, "{{base_url}}").get("via") == "tabby"  # first-party
+    assert "via" not in _step_for(result, "tracker.com")  # third-party, no auth
 
 
 def test_auth_host_routed_even_when_third_party():
@@ -81,11 +89,15 @@ def test_rest_step_unchanged_without_profile_slug():
 
 def test_adopt_profile_sets_top_level_tabby_profile_id():
     profile = generate_adopt_profile(
-        base_url="https://api.secure.example.com", har_entries=[_bearer_entry()], profile_slug="my-profile"
+        base_url="https://api.secure.example.com",
+        har_entries=[_bearer_entry()],
+        profile_slug="my-profile",
     )
     assert profile["tabby_profile_id"] == "my-profile"
 
 
 def test_adopt_profile_omits_tabby_profile_id_when_absent():
-    profile = generate_adopt_profile(base_url="https://api.secure.example.com", har_entries=[_bearer_entry()])
+    profile = generate_adopt_profile(
+        base_url="https://api.secure.example.com", har_entries=[_bearer_entry()]
+    )
     assert "tabby_profile_id" not in profile

@@ -191,6 +191,83 @@ def _cdp_is_reachable(host: str = "localhost", port: int = 9222, timeout: float 
         return False
 
 
+def _probe_execute_ready(profile_id: str, admin_token: str) -> tuple[str, str]:
+    """Probe whether /execute/fetch actually works for ``profile_id``.
+
+    A session can be DB-HEALTHY with a live worker on CDP :9222 yet have *no*
+    /execute/* routes mounted (the worker only mounts them when
+    EXECUTE_ENABLED==='true', :8091) or no LOCAL_WORKER_URL for the API to route
+    through. The CDP reachability check (:9222) does not prove either, so this
+    issues a trivial harmless POST /execute/fetch and classifies the result.
+
+    Returns ``(state, detail)`` where ``state`` is one of:
+      - ``"ready"``       — the execute path resolved a session and ran the fetch
+                            (any wrapped target status counts; the route works).
+      - ``"no-route"``    — 404 with a "no healthy session"/"no active profile"
+                            marker, or a 404/502 that indicates the execute route
+                            isn't mounted / worker unreachable.
+      - ``"unknown"``     — the probe itself could not run (API unreachable, auth
+                            error, unexpected status); caller should warn, not fail.
+
+    Never raises — execute readiness is advisory; a probe failure must not crash
+    ``session ensure``.
+    """
+    try:
+        resp = _tabby_http(
+            "POST",
+            "/execute/fetch",
+            {
+                "profile_id": profile_id,
+                "url": "https://example.com/",
+                "method": "GET",
+                "timeout_ms": 5000,
+            },
+            token=admin_token,
+            timeout=12,
+        )
+        # A dict response means the API routed to the worker and got {status,...}
+        # back — the execute path is live regardless of the wrapped target status.
+        return ("ready", f"execute/fetch routed (worker responded: {type(resp).__name__})")
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "http 404" in msg and ("no healthy session" in msg or "no active profile" in msg):
+            # The route exists but the resolver found no live session — usually a
+            # transient gap right after promotion; treat as not-ready, actionable.
+            return ("no-route", "no resolvable session for execute (route reachable)")
+        if "http 404" in msg:
+            return ("no-route", "/execute/fetch returned 404 — execute routes not mounted")
+        if "http 502" in msg or "http 504" in msg:
+            return ("no-route", "worker unreachable on :8091 (502/504) — check LOCAL_WORKER_URL")
+        return ("unknown", f"probe could not run: {exc}")
+
+
+def _report_execute_readiness(profile_id: str, admin_token: str) -> None:
+    """Probe and report execute readiness, distinguishing CDP from execute.
+
+    Advisory only: prints a status line for the CDP surface (:9222) and the
+    execute surface (:8091) so a "✓ HEALTHY" session that can't actually serve
+    /execute/fetch is visible *now*, not at the first tool call (gaps.md B4).
+    Never raises.
+    """
+    cdp_ok = _cdp_is_reachable()
+    print(f"  CDP :9222     : {_green('reachable') if cdp_ok else _yellow('unreachable')}")
+
+    state, detail = _probe_execute_ready(profile_id, admin_token)
+    if state == "ready":
+        print(f"  Execute :8091 : {_green('ready')}  ({detail})")
+    elif state == "no-route":
+        print(f"  Execute :8091 : {_red('NOT ready')}  ({detail})")
+        print(
+            _yellow(
+                "  ⚠ The session is HEALTHY but /execute/fetch is not serving. Ensure the "
+                "worker has EXECUTE_ENABLED=true and the API has LOCAL_WORKER_URL set "
+                "(both handled by re-running `noui tabby session ensure`), then retry."
+            )
+        )
+    else:
+        print(f"  Execute :8091 : {_yellow('unknown')}  ({detail})")
+
+
 def _tabby_worker_build_state() -> tuple[str, str]:
     """Report the freshness of the Tabby worker's compiled output.
 
@@ -227,6 +304,11 @@ def _tabby_worker_build_state() -> tuple[str, str]:
     newest_src = main_js_mtime
     newest_path = ""
     for ts_file in src_dir.rglob("*.ts"):
+        # Test files are excluded from the tsc build output, so they can never
+        # make the runtime dist stale — skip them or editing a *.spec.ts would
+        # flag a perpetual false-positive "stale build".
+        if ts_file.name.endswith((".spec.ts", ".test.ts")):
+            continue
         try:
             mtime = ts_file.stat().st_mtime
         except OSError:
@@ -1089,12 +1171,26 @@ def cmd_login_register(args: argparse.Namespace) -> int:
         print(_red(f"ServiceProfile creation failed: {exc}"))
         return 1
 
+    # Optionally promote STAGING → ACTIVE so the runtime can resolve the profile.
+    # The runtime resolver only matches ACTIVE/CANARY, so a STAGING-only profile
+    # 404s at the first tool call (see gaps.md B1). `--promote` closes that gap
+    # inline; otherwise the profile stays STAGING and `noui login promote` (or
+    # `noui tabby setup`) must run before any tool call.
+    version_state = "STAGING"
+    if getattr(args, "promote", False):
+        print()
+        if _promote_profile_to_active(profile_db_id, admin_token):
+            version_state = "ACTIVE"
+        else:
+            print(_red("Promotion failed — profile left in STAGING."))
+            print(f"  Retry with: {_bold(f'noui login promote {bundle_path}')}")
+
     # Update bundle file with registered IDs
     bundle["_provisioned"] = {
         "app_id": app_id,
         "profile_db_id": profile_db_id,
         "profile_id": profile_id,
-        "version_state": "STAGING",
+        "version_state": version_state,
     }
     bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
 
@@ -1120,10 +1216,82 @@ def cmd_login_register(args: argparse.Namespace) -> int:
     print(f"  Application ID       : {_cyan(app_id)}")
     print(f"  ServiceProfile DB ID : {_cyan(profile_db_id)}")
     print(f"  Tabby profile ID     : {_cyan(profile_id)}")
-    print("  Version state        : STAGING")
+    print(f"  Version state        : {version_state}")
+
+    # Optionally also emit a tenant-wide App Template so federated users can
+    # auto-provision their own profile from this same config (A1).
+    if getattr(args, "as_template", False):
+        print()
+        tmpl = _emit_app_template(patched_draft, profile_draft, admin_token, upsert=True)
+        if tmpl is not None:
+            bundle["_provisioned"]["template_id"] = tmpl.get("id", "")
+            bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
+            print(_green(f"  App Template ID      : {tmpl.get('id', '?')}"))
     print()
     print("  Next steps:")
     print(f"    {_bold(f'noui login credentials {bundle_path}')}")
+    if version_state != "ACTIVE":
+        print(
+            f"    {_bold(f'noui login promote {bundle_path}')}"
+            "   (required — runtime resolves only ACTIVE/CANARY)"
+        )
+    return 0
+
+
+def cmd_login_promote(args: argparse.Namespace) -> int:
+    """Promote a registered profile from STAGING to ACTIVE.
+
+    The login happy path (`register → credentials → validate → session ensure`)
+    leaves the profile in STAGING, but the runtime resolver matches only
+    ACTIVE/CANARY — so a tool call 404s until the profile is promoted. This runs
+    the same `STAGING → CANARY → ACTIVE` walk `tabby setup` uses.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+
+    bundle_path = Path(args.bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Bundle file not found: {bundle_path}"))
+        return 1
+
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse bundle: {exc}"))
+        return 1
+
+    provisioned = bundle.get("_provisioned")
+    if not provisioned:
+        print(_red("Bundle has not been registered yet. Run: noui login register"))
+        return 1
+
+    profile_db_id: str = provisioned.get("profile_db_id", "")
+    profile_id: str = provisioned.get("profile_id", profile_db_id)
+    if not profile_db_id:
+        print(_red("No profile_db_id found in bundle — run `noui login register` first"))
+        return 1
+
+    if provisioned.get("version_state") == "ACTIVE":
+        print(_green(f"Profile '{profile_id}' is already ACTIVE — nothing to do."))
+        return 0
+
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    print(f"Promoting profile '{_cyan(profile_id)}' to ACTIVE …")
+    if not _promote_profile_to_active(profile_db_id, admin_token):
+        return 1
+
+    provisioned["version_state"] = "ACTIVE"
+    bundle["_provisioned"] = provisioned
+    bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
+
+    print()
+    print(_green(f"Profile '{profile_id}' is now ACTIVE."))
+    print("  Next: start a browser session:")
+    print(f"    {_bold(f'noui tabby session ensure --profile {profile_id}')}")
     return 0
 
 
@@ -1294,8 +1462,10 @@ def cmd_login_import(args: argparse.Namespace) -> int:
     review_args = argparse.Namespace(bundle_file=str(bundle_path))
     cmd_login_review(review_args)
 
-    # register
-    register_args = argparse.Namespace(bundle_file=str(bundle_path))
+    # register (optionally promote STAGING → ACTIVE inline)
+    register_args = argparse.Namespace(
+        bundle_file=str(bundle_path), promote=getattr(args, "promote", False)
+    )
     rc = cmd_login_register(register_args)
     if rc != 0:
         return rc
@@ -1443,7 +1613,7 @@ def cmd_workflow_export(args: argparse.Namespace) -> int:
     profile_db_id: str = getattr(args, "profile_db_id", "")
     capture_session_id: str = getattr(args, "capture_session", "")
     description_override: str = getattr(args, "description_override", "")
-    execution_mode: str = getattr(args, "execution_mode", "cdp")
+    execution_mode: str = getattr(args, "execution_mode", "tabby")
     do_verify: bool = getattr(args, "verify", False)
 
     if target not in ("mcp", "skill", "both"):
@@ -1861,7 +2031,7 @@ def cmd_autopilot_export(args: argparse.Namespace) -> int:
     wf_id = args.workflow_session_id
     cs_id = args.capture_session_id
     profile_slug = getattr(args, "profile_slug", "")
-    execution_mode = getattr(args, "execution_mode", "cdp")
+    execution_mode = getattr(args, "execution_mode", "tabby")
 
     params = [f"capture_session_id={cs_id}", "as=mcp", f"execution_mode={execution_mode}"]
     if profile_slug:
@@ -2435,23 +2605,6 @@ def cmd_mcp_status(args: argparse.Namespace) -> int:
         print(f"  Status    : {_green(f'running (PID {pid})')}")
     else:
         print(f"  Status    : {_red('stopped')}")
-
-    # Check CDP accessibility for servers that use the browser-via-CDP pattern
-    ops_dir = manifest_path.parent / "operations"
-    uses_cdp = (
-        any(
-            "CDP_LIST_URL" in op_file.read_text(encoding="utf-8", errors="ignore")
-            for op_file in ops_dir.glob("*.py")
-        )
-        if ops_dir.exists()
-        else False
-    )
-    if uses_cdp:
-        if _cdp_is_reachable():
-            print(f"  CDP       : {_green('reachable (localhost:9222)')}")
-        else:
-            print(f"  CDP       : {_red('not reachable (localhost:9222)')}")
-            print(_yellow("             Run: noui tabby session ensure"))
 
     return 0
 
@@ -3628,6 +3781,42 @@ def _bypass_canary_gate(profile_db_id: str) -> bool:
         return False
 
 
+def _promote_profile_to_active(profile_db_id: str, admin_token: str) -> bool:
+    """Walk a STAGING ServiceProfile to ACTIVE so the runtime can resolve it.
+
+    `/execute/fetch` and `/credentials/request` resolve only ACTIVE/CANARY
+    profiles (credentials.service.ts:224,268); a freshly-registered profile is
+    left in STAGING and would 404 at the first tool call. This reproduces the
+    exact sequence `tabby setup`'s `_ensure_service_profile` uses:
+    `STAGING → CANARY` promote, a direct Postgres canary-gate bypass, then
+    `CANARY → ACTIVE` promote. Prints progress; returns True on success.
+    """
+    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion failed: {exc}"))
+        return False
+
+    print("  Bypassing canary gate …", end=" ", flush=True)
+    if not _bypass_canary_gate(profile_db_id):
+        return False
+    print(_green("✓"))
+
+    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
+    try:
+        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
+        print(_green("✓"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
+        return False
+
+    return True
+
+
 def _prompt_app_config(profile_id: str) -> dict[str, Any] | None:
     print()
     print(_bold(f"  Configure login for profile '{profile_id}'"))
@@ -3746,7 +3935,11 @@ def _build_app_payload(profile_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         },
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
-        "browser_policy": {"streaming_mode": "cdp"},
+        # execute_enabled must be true or the K8s worker Service + pod
+        # EXECUTE_ENABLED are never created and /execute/fetch 502s (defaults
+        # false). Locally masked by .env.local EXECUTE_ENABLED + LOCAL_WORKER_URL.
+        # See gaps.md A4.
+        "execute_enabled": True,
     }
 
 
@@ -3833,30 +4026,7 @@ def _ensure_service_profile(
 
     entry["profile_db_id"] = profile_db_id
 
-    print("  Promoting STAGING → CANARY …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion failed: {exc}"))
-        return False
-
-    print("  Bypassing canary gate …", end=" ", flush=True)
-    if not _bypass_canary_gate(profile_db_id):
-        return False
-    print(_green("✓"))
-
-    print("  Promoting CANARY → ACTIVE …", end=" ", flush=True)
-    try:
-        _tabby_http("POST", f"/admin/profiles/{profile_db_id}/promote", token=admin_token)
-        print(_green("✓"))
-    except RuntimeError as exc:
-        print()
-        print(_red(f"  Promotion to ACTIVE failed: {exc}"))
-        return False
-
-    return True
+    return _promote_profile_to_active(profile_db_id, admin_token)
 
 
 # ---------------------------------------------------------------------------
@@ -4157,11 +4327,88 @@ def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
         },
     )
 
+    # A3: optionally provision a tenant-wide App Template so a profile slug
+    # resolves for any tenant user. The exchanged Tabby JWT is authenticated, and
+    # POST /admin/app-templates is open to any authenticated user (own tenant), so
+    # this works without a Tabby admin token. With no --template-bundle, --cloud
+    # stays auth-verification-only (the documented prior behaviour).
+    template_bundle = getattr(args, "template_bundle", None)
+    if template_bundle:
+        rc = _provision_cloud_template(template_bundle, tabby_url, tabby_jwt)
+        if rc != 0:
+            return rc
+
     print()
     print(_green("✓ Cloud setup complete!"))
     print(f"  Settings written to: {_cyan(str(env_file))}")
     print("  Generated MCP servers/skills will authenticate via platform token-exchange.")
+    if not template_bundle:
+        print()
+        print(
+            _yellow(
+                "  No App Template provisioned (auth-verification only). Pass "
+                "--template-bundle <bundle.json> to emit a tenant-wide template, or run "
+                "`noui tabby template create <bundle.json>`."
+            )
+        )
     return 0
+
+
+def _provision_cloud_template(bundle_file: str, tabby_url: str, tabby_jwt: str) -> int:
+    """Emit a tenant-wide App Template against a cloud Tabby using the exchanged JWT.
+
+    Mirrors `noui tabby template create`, but POSTs to an absolute cloud URL with
+    the federated Tabby JWT (POST /admin/app-templates is open to any
+    authenticated user). PUT/upsert is Admin-only, so a name collision (409) is
+    treated as "already exists" rather than attempting an update.
+    """
+    from compiler.login.tabby_draft_generator import build_app_template_payload
+
+    bundle_path = Path(bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Template bundle not found: {bundle_path}"))
+        return 1
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse template bundle: {exc}"))
+        return 1
+
+    app_draft = bundle.get("application_draft", {})
+    profile_draft = bundle.get("service_profile_draft", {})
+    try:
+        payload = build_app_template_payload(app_draft, profile_draft)
+    except ValueError as exc:
+        print(_red(f"Cannot build template payload: {exc}"))
+        return 1
+
+    pattern = payload["profile_name_pattern"]
+    print(
+        f"Provisioning App Template (pattern '{_cyan(pattern)}') at {_cyan(tabby_url)} …",
+        end=" ",
+        flush=True,
+    )
+    try:
+        resp = _post_json_to(f"{tabby_url}/admin/app-templates", payload, token=tabby_jwt)
+        assert isinstance(resp, dict)
+        print(_green("✓"))
+        print(f"  Template ID          : {_cyan(resp.get('id', '?'))}")
+        print(f"  profile_name_pattern : {_cyan(resp.get('profile_name_pattern', pattern))}")
+        return 0
+    except RuntimeError as exc:
+        if "HTTP 409" in str(exc):
+            print(_yellow("already exists"))
+            print(
+                f"  A template for pattern '{pattern}' already exists in this tenant — reusing it."
+            )
+            return 0
+        print()
+        print(_red(f"App Template provisioning failed: {exc}"))
+        return 1
+    except AssertionError:
+        print()
+        print(_red("App Template creation returned an unexpected (non-dict) response."))
+        return 1
 
 
 def cmd_tabby_setup(args: argparse.Namespace) -> int:
@@ -4358,8 +4605,412 @@ def cmd_tabby_setup(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# tabby template subcommands (tenant-wide auto-provisioning)
+# ---------------------------------------------------------------------------
+
+
+def _emit_app_template(
+    application_draft: dict[str, Any],
+    service_profile_draft: dict[str, Any],
+    admin_token: str,
+    *,
+    upsert: bool = False,
+) -> dict[str, Any] | None:
+    """Build and POST an App Template; optionally upsert (PUT) if it already exists.
+
+    Returns the created/updated template dict, or None on failure (after printing
+    an actionable error). ``profile_name_pattern`` is forced to the runtime profile
+    slug so Tabby's autoProvisionFromTemplate matches federated credential/execute
+    requests for that slug.
+    """
+    from compiler.login.tabby_draft_generator import build_app_template_payload
+
+    try:
+        payload = build_app_template_payload(application_draft, service_profile_draft)
+    except ValueError as exc:
+        print(_red(f"Cannot build template payload: {exc}"))
+        return None
+
+    pattern = payload["profile_name_pattern"]
+    name = payload["name"]
+    print(
+        f"Creating App Template '{_cyan(name)}' (pattern '{_cyan(pattern)}') …", end=" ", flush=True
+    )
+    try:
+        resp = _tabby_http("POST", "/admin/app-templates", payload, token=admin_token)
+        assert isinstance(resp, dict)
+        print(_green("done"))
+        return resp
+    except RuntimeError as exc:
+        # A name collision (409) is expected on re-run; upsert via PUT when asked.
+        if upsert and "HTTP 409" in str(exc):
+            print(_yellow("exists"))
+            existing = _find_app_template_by_pattern(pattern, admin_token)
+            if not existing:
+                print(_red("  Template name exists but could not locate it by pattern to update."))
+                return None
+            tmpl_id = existing.get("id", "")
+            print(f"  Updating App Template {_cyan(tmpl_id)} …", end=" ", flush=True)
+            try:
+                resp = _tabby_http(
+                    "PUT", f"/admin/app-templates/{tmpl_id}", payload, token=admin_token
+                )
+                assert isinstance(resp, dict)
+                print(_green("done"))
+                return resp
+            except (RuntimeError, AssertionError) as exc2:
+                print()
+                print(_red(f"  Template update failed: {exc2}"))
+                print("  (PUT /admin/app-templates/:id is Admin-only — use an admin token.)")
+                return None
+        print()
+        print(_red(f"App Template creation failed: {exc}"))
+        return None
+    except AssertionError:
+        print()
+        print(_red("App Template creation returned an unexpected (non-dict) response."))
+        return None
+
+
+def _find_app_template_by_pattern(pattern: str, admin_token: str) -> dict[str, Any] | None:
+    """Return the first template whose profile_name_pattern matches, else None."""
+    try:
+        resp = _tabby_http("GET", "/admin/app-templates", token=admin_token)
+    except RuntimeError:
+        return None
+    templates = (
+        resp if isinstance(resp, list) else resp.get("data", []) if isinstance(resp, dict) else []
+    )
+    for t in templates:
+        if isinstance(t, dict) and t.get("profile_name_pattern") == pattern:
+            return t
+    return None
+
+
+def cmd_tabby_template_create(args: argparse.Namespace) -> int:
+    """Emit (or upsert) a Tabby App Template from a login bundle.
+
+    The bundle is the same JSON produced by `noui login export`/the draft
+    generator (application_draft + service_profile_draft). The template is the
+    tenant-wide blueprint Tabby auto-provisions per federated user — pair with the
+    platform_jwt runtime (A2) and `tabby setup --cloud`/cloud auth.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+
+    bundle_path = Path(args.bundle_file)
+    if not bundle_path.exists():
+        print(_red(f"Bundle file not found: {bundle_path}"))
+        return 1
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as exc:
+        print(_red(f"Failed to parse bundle: {exc}"))
+        return 1
+
+    app_draft = bundle.get("application_draft", {})
+    profile_draft = bundle.get("service_profile_draft", {})
+    if not profile_draft.get("profile_id"):
+        print(_red("Bundle is missing service_profile_draft.profile_id"))
+        return 1
+
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    tmpl = _emit_app_template(
+        app_draft, profile_draft, admin_token, upsert=getattr(args, "upsert", False)
+    )
+    if tmpl is None:
+        return 1
+
+    print()
+    print(_green(f"App Template ready for profile slug '{profile_draft['profile_id']}'"))
+    print(f"  Template ID          : {_cyan(tmpl.get('id', '?'))}")
+    print(f"  profile_name_pattern : {_cyan(tmpl.get('profile_name_pattern', '?'))}")
+    print()
+    print("  Federated users (platform_jwt runtime) requesting this slug will be")
+    print("  auto-provisioned a private App+Profile+Session from this template.")
+    return 0
+
+
+def _list_app_templates(admin_token: str) -> list[dict[str, Any]]:
+    """Return all App Templates for the caller's tenant (empty list on error)."""
+    try:
+        resp = _tabby_http("GET", "/admin/app-templates", token=admin_token)
+    except RuntimeError:
+        return []
+    if isinstance(resp, list):
+        return [t for t in resp if isinstance(t, dict)]
+    if isinstance(resp, dict):
+        return [t for t in resp.get("data", []) if isinstance(t, dict)]
+    return []
+
+
+def _find_profiles_by_id(profile_id: str, admin_token: str) -> list[dict[str, Any]]:
+    """Return every ServiceProfile whose profile_id matches (any owner / state)."""
+    # NB: GET /admin/profiles takes no query params — `?limit=` 400s. (The older
+    # _find_active_profile helper still passes ?limit=200 and silently gets None.)
+    try:
+        resp = _tabby_http("GET", "/admin/profiles", token=admin_token)
+    except RuntimeError:
+        return []
+    profiles = (
+        resp.get("data", [])
+        if isinstance(resp, dict)
+        else list(resp)
+        if isinstance(resp, list)
+        else []
+    )
+    return [p for p in profiles if isinstance(p, dict) and p.get("profile_id") == profile_id]
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """True if s has canonical UUID shape (8-4-4-4-12 hex). Avoids an `re` import."""
+    parts = s.split("-")
+    if len(parts) != 5 or [len(p) for p in parts] != [8, 4, 4, 4, 12]:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for p in parts for c in p)
+
+
+def cmd_tabby_template_list(args: argparse.Namespace) -> int:
+    """List the tenant's App Templates."""
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    templates = _list_app_templates(admin_token)
+    if not templates:
+        print("No App Templates found.")
+        print(f"  Create one with: {_bold('noui login register <bundle> --as-template')}")
+        return 0
+
+    print(_bold("App Templates:"))
+    print()
+    print(f"  {'ID':36}  {'PATTERN':24}  {'EXEC':4}  NAME")
+    print(f"  {'-' * 36}  {'-' * 24}  {'-' * 4}  {'-' * 20}")
+    for t in templates:
+        exec_flag = "yes" if t.get("execute_enabled") else "no"
+        print(
+            f"  {str(t.get('id', '?')):36}  "
+            f"{str(t.get('profile_name_pattern', '?')):24}  "
+            f"{exec_flag:4}  {t.get('name', '?')}"
+        )
+    print()
+    print(f"  Inspect one with: {_bold('noui tabby template show <id|pattern>')}")
+    return 0
+
+
+def cmd_tabby_template_show(args: argparse.Namespace) -> int:
+    """Show a single App Template, resolved by template id or profile_name_pattern."""
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    ref: str = args.template
+    tmpl: dict[str, Any] | None = None
+    if _looks_like_uuid(ref):
+        try:
+            resp = _tabby_http("GET", f"/admin/app-templates/{ref}", token=admin_token)
+            tmpl = resp if isinstance(resp, dict) else None
+        except RuntimeError as exc:
+            print(_red(f"Template id {ref!r} not found: {exc}"))
+            return 1
+    else:
+        tmpl = _find_app_template_by_pattern(ref, admin_token)
+
+    if tmpl is None:
+        print(_red(f"No App Template found for {ref!r}."))
+        print(f"  List templates with: {_bold('noui tabby template list')}")
+        return 1
+
+    login_cfg = tmpl.get("login_config") or {}
+    export_pol = tmpl.get("export_policy") or {}
+    steps = login_cfg.get("steps", []) if isinstance(login_cfg, dict) else []
+
+    print(_bold(f"App Template: {tmpl.get('name', '?')}"))
+    print(f"  Template ID          : {_cyan(tmpl.get('id', '?'))}")
+    print(f"  profile_name_pattern : {_cyan(tmpl.get('profile_name_pattern', '?'))}")
+    print(f"  execute_enabled      : {tmpl.get('execute_enabled')}")
+    print(
+        f"  credential_ref       : {tmpl.get('credential_ref') or tmpl.get('credential_ref_default')}"
+    )
+    print(
+        f"  login_url            : {login_cfg.get('login_url') if isinstance(login_cfg, dict) else '?'}"
+    )
+    print(f"  login steps          : {len(steps)}")
+    for i, step in enumerate(steps, 1):
+        sel = step.get("selector", "")
+        detail = f" {sel}" if sel else (f" {step.get('url', '')}" if step.get("url") else "")
+        print(f"      {i}. {step.get('action', '?')}{detail}")
+    if isinstance(export_pol, dict):
+        ct = export_pol.get("credential_types", {})
+        print(f"  credential headers   : {ct.get('headers', []) if isinstance(ct, dict) else ct}")
+        print(f"  target_domains       : {export_pol.get('target_domains', [])}")
+    print()
+    pat = tmpl.get("profile_name_pattern", "?")
+    print(f"  Validate it with: {_bold(f'noui tabby template doctor {pat}')}")
+    return 0
+
+
+def cmd_tabby_template_doctor(args: argparse.Namespace) -> int:
+    """Diagnose whether an App Template will actually auto-provision for a user.
+
+    Encodes the silent failure modes of `autoProvisionFromTemplate`:
+      - a shared (owner=NULL) profile with the same profile_id short-circuits it;
+      - execute_enabled=false breaks /execute/fetch for provisioned apps;
+      - empty credential_types / target_domains yield profiles that cannot auth;
+      - an empty login_config means no login DSL to run.
+    """
+    if not _tabby_alive():
+        print(_red(f"Tabby API not reachable at {TABBY_API_HOST}"))
+        return 1
+    admin_token = _get_admin_token()
+    if not admin_token:
+        return 1
+
+    pattern: str = args.pattern
+    tmpl = _find_app_template_by_pattern(pattern, admin_token)
+    if tmpl is None:
+        print(_red(f"✗ No App Template with profile_name_pattern {pattern!r}."))
+        print(f"  List templates with: {_bold('noui tabby template list')}")
+        return 1
+
+    checks: list[tuple[str, str, str]] = []  # (status, label, detail)
+
+    def ok(label: str, detail: str = "") -> None:
+        checks.append(("ok", label, detail))
+
+    def warn(label: str, detail: str = "") -> None:
+        checks.append(("warn", label, detail))
+
+    print(_bold(f"Template doctor — pattern '{pattern}' (template '{tmpl.get('name', '?')}')"))
+    print()
+
+    ok("Template exists", f"id={tmpl.get('id', '?')}")
+
+    # 1. Shared (owner=NULL) profile that would short-circuit auto-provision.
+    profiles = _find_profiles_by_id(pattern, admin_token)
+    shared = [p for p in profiles if not p.get("owner_user_id")]
+    if shared:
+        states = ", ".join(sorted({str(p.get("version_state")) for p in shared}))
+        warn(
+            "A shared (owner=NULL) profile shadows this pattern",
+            f"{len(shared)} profile(s) [{states}] — credential requests resolve the shared "
+            f"profile first, so autoProvisionFromTemplate never fires for this slug.",
+        )
+    else:
+        ok("No shared profile shadows the pattern", "auto-provision can fire for federated users")
+
+    # 2. execute_enabled
+    if tmpl.get("execute_enabled"):
+        ok("execute_enabled = true", "provisioned apps can serve /execute/fetch")
+    else:
+        warn(
+            "execute_enabled = false",
+            "provisioned apps get no worker execute route — /execute/fetch will 502. "
+            "Recreate with execute_enabled if the skill uses execute.",
+        )
+
+    # 3. credential_types / target_domains in export_policy
+    export_pol = tmpl.get("export_policy") or {}
+    ct = export_pol.get("credential_types", {}) if isinstance(export_pol, dict) else {}
+    has_creds = bool((ct or {}).get("headers") or (ct or {}).get("cookies"))
+    if has_creds:
+        ok("export_policy.credential_types populated", f"headers={ct.get('headers', [])}")
+    else:
+        warn(
+            "export_policy.credential_types is empty",
+            "auto-provisioned profiles inherit no credential types and may not authenticate.",
+        )
+    if isinstance(export_pol, dict) and export_pol.get("target_domains"):
+        ok("export_policy.target_domains populated", f"{export_pol.get('target_domains')}")
+    else:
+        warn("export_policy.target_domains is empty", "credential capture has no domain scope.")
+
+    # 4. login_config has steps
+    login_cfg = tmpl.get("login_config") or {}
+    steps = login_cfg.get("steps", []) if isinstance(login_cfg, dict) else []
+    if steps:
+        ok("login_config has steps", f"{len(steps)} step(s)")
+    else:
+        warn(
+            "login_config has no steps",
+            "nothing to run at login — provisioned sessions can't authenticate.",
+        )
+
+    # 5. credential_ref model (informational)
+    cref = tmpl.get("credential_ref") or tmpl.get("credential_ref_default") or "manual:"
+    if str(cref).startswith("manual:"):
+        ok(
+            "credential_ref = manual:",
+            "each federated user completes login via HITL (no stored secret)",
+        )
+    else:
+        ok(
+            f"credential_ref = {cref}",
+            "provisioned profiles read this secret — ensure it exists per user/tenant",
+        )
+
+    # Render
+    glyph = {"ok": _green("✓"), "warn": _yellow("⚠")}
+    for status, label, detail in checks:
+        print(f"  {glyph[status]} {label}")
+        if detail:
+            print(f"      {detail}")
+
+    warns = sum(1 for s, _, _ in checks if s == "warn")
+    print()
+    if warns == 0:
+        print(_green("Verdict: template looks sound for auto-provisioning."))
+    else:
+        print(
+            _yellow(
+                f"Verdict: {warns} warning(s) — auto-provisioning may not work as expected (see above)."
+            )
+        )
+    print("  Note: this validates template config; a live session for a provisioned profile")
+    print("  also needs the controller/k8s runtime (not present in local dev).")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # tabby session subcommands
 # ---------------------------------------------------------------------------
+
+
+def _warn_if_execute_disabled(app_id: str, admin_token: str) -> None:
+    """Warn (non-fatally) when the resolved app has execute_enabled=false.
+
+    In real K8s, execute_enabled=false means no worker Service / EXECUTE_ENABLED,
+    so /execute/fetch 502s — the default `tabby` runtime is silently dead. NoUI
+    now sets execute_enabled: true on every app payload (A4), but a pre-existing
+    app (created before this fix, or by another tool) may still have it false.
+    Best-effort: any lookup failure is ignored so session ensure never breaks.
+    """
+    try:
+        app = _tabby_http("GET", f"/apps/{app_id}", token=admin_token)
+    except RuntimeError:
+        return
+    if not isinstance(app, dict):
+        return
+    # Treat a present-and-false value as a real warning; tolerate apps that
+    # simply don't surface the field.
+    if app.get("execute_enabled") is False:
+        print(
+            _yellow(
+                "  ⚠ This app has execute_enabled=false — /execute/fetch will 502 in K8s "
+                "(the default `tabby` runtime is dead). Re-provision with a NoUI version "
+                "that sets execute_enabled: true, or patch the app/template."
+            )
+        )
 
 
 def cmd_session_status(args: argparse.Namespace) -> int:  # noqa: ARG001
@@ -4458,6 +5109,8 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
         print(_red(f"No app_id cached for '{profile_id}'. Re-run: noui tabby setup"))
         return 1
 
+    _warn_if_execute_disabled(app_id, admin_token)
+
     try:
         jwt_payload = _decode_jwt_payload(admin_token)
         tenant_id = jwt_payload.get("tenant_id") or jwt_payload.get("tenantId", "")
@@ -4470,6 +5123,8 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
         pid = _read_pid(TABBY_WORKER_PID_FILE)
         if pid and _pid_running(pid) and _cdp_is_reachable():
             print(_green(f"✓ Session for '{profile_id}' is already HEALTHY"))
+            # B4: HEALTHY + CDP-reachable still doesn't prove /execute/fetch works.
+            _report_execute_readiness(profile_id, admin_token)
             # Still honor --open / --skill against the existing session.
             _maybe_navigate_from_args(args)
             return 0
@@ -4493,8 +5148,31 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
             "APP_ID": app_id,
             "TENANT_ID": tenant_id,
             "STREAMING_MODE": "cdp",
+            # B3: the worker only mounts /execute/* when EXECUTE_ENABLED==='true'
+            # (apps/worker/src/health-server.ts:33). On a fresh local install
+            # tabby/.env.local may lack it, leaving the session "✓ HEALTHY" with
+            # no execute routes — the failure only surfaces at the first tool call.
+            # Force it on for the spawned worker so /execute/fetch is always served.
+            "EXECUTE_ENABLED": "true",
         }
     )
+    # B3: the Tabby *API* (not this worker) needs LOCAL_WORKER_URL to reach the
+    # worker in dev — the K8s service DNS name is unresolvable locally
+    # (execute.service.ts: LOCAL_WORKER_URL else K8s DNS). We can't set it on the
+    # already-running API process from here, so warn loudly if it's absent from
+    # the environment the API was started with, and seed a sane default into the
+    # worker env so a co-located check has something to read.
+    env.setdefault("LOCAL_WORKER_URL", "http://localhost:8091")
+    if not os.environ.get("LOCAL_WORKER_URL") and "LOCAL_WORKER_URL" not in _load_env_local():
+        print(
+            _yellow(
+                "  ⚠ LOCAL_WORKER_URL is not set for the Tabby API. In local dev the API "
+                "reaches the worker via LOCAL_WORKER_URL (default http://localhost:8091); "
+                "without it /execute/fetch will fail to route. Add "
+                "LOCAL_WORKER_URL=http://localhost:8091 to tabby/.env.local and restart "
+                "`noui tabby start`."
+            )
+        )
 
     creds_mount = Path("/tmp/tabby-local-secrets")
     secret_name = entry.get("credential_ref", "k8s:secret/no-auth").replace("k8s:secret/", "")
@@ -4637,6 +5315,10 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
 
     print(_green(f"✓ Session for '{profile_id}' is HEALTHY"))
 
+    # B4: prove /execute/fetch is actually served (:8091, EXECUTE_ENABLED), not
+    # just that CDP (:9222) is reachable.
+    _report_execute_readiness(profile_id, admin_token)
+
     _maybe_navigate_from_args(args)
 
     print()
@@ -4748,6 +5430,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "register", help="Register bundle with Tabby (needs TABBY_ADMIN_TOKEN)"
     )
     login_register.add_argument("bundle_file", help="Path to bundle JSON file")
+    login_register.add_argument(
+        "--as-template",
+        dest="as_template",
+        action="store_true",
+        help=(
+            "Also emit a tenant-wide App Template (POST /admin/app-templates) so "
+            "federated users auto-provision their own profile from this config"
+        ),
+    )
+    login_register.add_argument(
+        "--promote",
+        action="store_true",
+        help="Also promote STAGING → ACTIVE so the runtime can resolve the profile",
+    )
+
+    login_promote = login_sub.add_parser(
+        "promote", help="Promote a registered profile STAGING → ACTIVE"
+    )
+    login_promote.add_argument("bundle_file", help="Path to bundle JSON file")
 
     login_validate = login_sub.add_parser(
         "validate", help="Wait for Tabby profile to become HEALTHY"
@@ -4765,6 +5466,9 @@ def _build_parser() -> argparse.ArgumentParser:
     login_import.add_argument("session_id", help="Login session ID")
     login_import.add_argument(
         "--validate", action="store_true", help="Also run validate after register"
+    )
+    login_import.add_argument(
+        "--promote", action="store_true", help="Also promote STAGING → ACTIVE after register"
     )
 
     # --- workflow ---
@@ -4830,11 +5534,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     wf_export.add_argument(
         "--execution-mode",
-        default="cdp",
-        choices=["cdp", "http"],
+        default="tabby",
+        choices=["tabby", "http"],
         dest="execution_mode",
         help=(
-            "Execution strategy: 'cdp' (default, runs inside Tabby's browser) "
+            "Execution strategy: 'tabby' (default, runs inside Tabby's browser) "
             "or 'http' (legacy httpx + resolve_auth)"
         ),
     )
@@ -4996,11 +5700,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap_export.add_argument("--profile-slug", default="", help="Tabby profile slug for auth")
     ap_export.add_argument(
         "--execution-mode",
-        default="cdp",
-        choices=["cdp", "http"],
+        default="tabby",
+        choices=["tabby", "http"],
         dest="execution_mode",
         help=(
-            "Execution strategy: 'cdp' (default, runs inside Tabby's browser) "
+            "Execution strategy: 'tabby' (default, runs inside Tabby's browser) "
             "or 'http' (legacy httpx + resolve_auth)"
         ),
     )
@@ -5083,6 +5787,43 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Cloud Tabby base URL for --cloud (default: $TABBY_API_URL)",
     )
+    tabby_setup_p.add_argument(
+        "--template-bundle",
+        dest="template_bundle",
+        metavar="PATH",
+        default=None,
+        help=(
+            "With --cloud: also provision a tenant-wide App Template from this "
+            "login bundle so a profile slug resolves for any tenant user"
+        ),
+    )
+
+    tabby_template_p = tabby_sub.add_parser(
+        "template", help="Manage tenant-wide App Templates (auto-provisioning blueprints)"
+    )
+    tabby_template_sub = tabby_template_p.add_subparsers(dest="template_action")
+    tmpl_create_p = tabby_template_sub.add_parser(
+        "create", help="Create (or upsert) an App Template from a login bundle"
+    )
+    tmpl_create_p.add_argument("bundle_file", help="Path to bundle JSON file")
+    tmpl_create_p.add_argument(
+        "--upsert",
+        action="store_true",
+        help="If a template with the same name exists, update it (PUT, Admin-only)",
+    )
+
+    tabby_template_sub.add_parser("list", help="List the tenant's App Templates")
+
+    tmpl_show_p = tabby_template_sub.add_parser(
+        "show", help="Show one App Template by id or profile_name_pattern"
+    )
+    tmpl_show_p.add_argument("template", help="Template id (UUID) or profile_name_pattern")
+
+    tmpl_doctor_p = tabby_template_sub.add_parser(
+        "doctor",
+        help="Diagnose whether a template will auto-provision (checks the silent failure modes)",
+    )
+    tmpl_doctor_p.add_argument("pattern", help="profile_name_pattern to diagnose")
 
     tabby_session_p = tabby_sub.add_parser("session", help="Manage browser sessions")
     tabby_session_sub = tabby_session_p.add_subparsers(dest="session_action")
@@ -5139,7 +5880,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch_login(args: argparse.Namespace) -> int:
     cmd = getattr(args, "login_command", None)
     if cmd is None:
-        print("Usage: noui login {record,list,export,review,register,validate,credentials,import}")
+        print(
+            "Usage: noui login "
+            "{record,list,export,review,register,promote,validate,credentials,import}"
+        )
         return 1
     dispatch = {
         "record": cmd_login_record,
@@ -5147,6 +5891,7 @@ def _dispatch_login(args: argparse.Namespace) -> int:
         "export": cmd_login_export,
         "review": cmd_login_review,
         "register": cmd_login_register,
+        "promote": cmd_login_promote,
         "validate": cmd_login_validate,
         "credentials": cmd_login_credentials,
         "import": cmd_login_import,
@@ -5261,16 +6006,35 @@ def _dispatch_tabby_session(args: argparse.Namespace) -> int:
     return fn(args)
 
 
+def _dispatch_tabby_template(args: argparse.Namespace) -> int:
+    action = getattr(args, "template_action", None)
+    if action is None:
+        print("Usage: noui tabby template {create,list,show,doctor}")
+        return 1
+    dispatch = {
+        "create": cmd_tabby_template_create,
+        "list": cmd_tabby_template_list,
+        "show": cmd_tabby_template_show,
+        "doctor": cmd_tabby_template_doctor,
+    }
+    fn = dispatch.get(action)
+    if fn is None:
+        print(_red(f"Unknown template subcommand: {action}"))
+        return 1
+    return fn(args)
+
+
 def _dispatch_tabby(args: argparse.Namespace) -> int:
     cmd = getattr(args, "tabby_command", None)
     if cmd is None:
-        print("Usage: noui tabby {status,start,stop,setup,session}")
+        print("Usage: noui tabby {status,start,stop,setup,template,session}")
         return 1
     dispatch = {
         "status": cmd_tabby_status,
         "start": cmd_tabby_start,
         "stop": cmd_tabby_stop,
         "setup": cmd_tabby_setup,
+        "template": _dispatch_tabby_template,
         "session": _dispatch_tabby_session,
     }
     fn = dispatch.get(cmd)

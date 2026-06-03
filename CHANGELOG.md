@@ -25,19 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING: `TABBY_API_HOST` and `TABBY_API_URL` collapsed into a single
   `TABBY_API_URL`.** Every env read now uses `TABBY_API_URL`; `TABBY_API_HOST` is
   no longer read (no fallback). Rename it in your `.env`/environment.
-- **Default execution mode for generated MCP servers and Skills is now CDP
-  browser execution** (`--execution-mode cdp`). Generated operations open a
-  WebSocket to Tabby's CDP endpoint (`localhost:9222`), locate the tab for the
-  recorded domain, and call `fetch(url, {credentials: 'include'})` via
-  `Runtime.evaluate` — cookies and TLS fingerprint come from the real
-  authenticated browser. Sidesteps Akamai / Cloudflare false positives that
-  fire on Python HTTP clients.
-- `auth.execution_strategy` added to `manifest.json` (additive, non-breaking).
-  `"cdp_browser_session"` under the default; mirrors `auth.strategy` under
+- **Default execution mode for generated MCP servers and Skills is the `tabby`
+  mode** (`--execution-mode tabby`). Generated operations call Tabby's
+  `POST /execute/fetch` endpoint over plain HTTP; the Tabby worker runs
+  `fetch(url, {credentials: 'include'})` inside the real authenticated browser,
+  so cookies and TLS fingerprint come from the browser. Sidesteps Akamai /
+  Cloudflare false positives that fire on Python HTTP clients. (This mode was
+  previously named `cdp`; renamed to `tabby` because the runtime no longer opens
+  a client-side CDP/WebSocket connection.)
+- **Removed the dead client-side CDP-WebSocket adapter**
+  (`compiler/runtime/cdp_adapter.py`) and the related `mcp status` CDP-reachability
+  probe. `--execution-mode cdp` is no longer accepted — use `tabby` (the default).
+- `auth.execution_strategy` added to `manifest.json` (additive, non-breaking):
+  `"tabby_execute_fetch"` under the default; mirrors `auth.strategy` under
   `--execution-mode http`. Existing readers of `auth.strategy` are unaffected.
-- `/noui-record-workflow` skill now documents the CDP default under *How
+- `/noui-record-workflow` skill documents the `tabby` default under *How
   Execution Works*; `/noui-generalize` reframed around hand-edit cases on top
-  of the default (SPA DOM scraping, HITL login).
+  of the default (SPA DOM scraping, HITL login). New `/noui-tabby-integration`
+  reference skill documents Tabby provisioning, `owner_user_id` scoping, the
+  execute runtime, and the end-to-end integration gaps.
 - Compiler now rejects empty, malformed, or no-API HARs early with
   `HarValidationError` instead of silently generating MCP servers or Skills
   with zero tools. The workflow export endpoint (`POST /workflow/.../export`)
@@ -53,20 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `compiler/runtime/cdp_adapter.py` — generates `noui_runtime/cdp.py` in every
-  compiled output, exposing `find_page`, `cdp_eval`, `cdp_fetch`.
-- `--execution-mode {cdp,http}` flag on `noui workflow export` and
+- `compiler/runtime/execute_adapter.py` — generates `noui_runtime/execute.py` in
+  tabby-mode output, exposing `execute_fetch` and `execute_browser` (calls Tabby's
+  `/execute/*` endpoints over plain HTTP).
+- `--execution-mode {tabby,http}` flag on `noui workflow export` and
   `noui autopilot export`; corresponding query param on the backend export
   endpoint.
-- Explicit `httpx` and `websockets` runtime dependencies in `pyproject.toml`
-  (were previously transitive).
-- 18 new tests covering CDP-default invariants and the `--execution-mode http`
+- Explicit `httpx` runtime dependency in `pyproject.toml` (was previously
+  transitive). `websockets` remains for the CLI's worker CDP-navigation bridge.
+- 18 new tests covering tabby-default invariants and the `--execution-mode http`
   opt-in for both MCP and Skill outputs.
 
 ### Notes
 
 - Existing generated servers under `workbench/mcp_servers/` are **not**
-  rewritten. Re-exporting an old recording will produce CDP-based output;
+  rewritten. Re-exporting an old recording will produce tabby-mode output;
   pass `--execution-mode http` to reproduce the legacy shape.
 - `auth.strategy` is unchanged and remains the credential-source descriptor
   (`tabby_credentials` / `static_secret_header`). Only execution mechanics

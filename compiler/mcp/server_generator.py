@@ -28,7 +28,7 @@ from compiler.mcp.har_to_tools import har_to_tool_defs
 from compiler.runtime.auth_adapter import generate_auth_adapter
 from compiler.runtime.execute_adapter import generate_execute_adapter
 
-_VALID_EXECUTION_MODES = ("cdp", "http")
+_VALID_EXECUTION_MODES = ("tabby", "http")
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -47,7 +47,7 @@ def compile_workflow(
     output_dir: str,
     profile_slug: str = "",
     profile_db_id: str = "",
-    execution_mode: str = "cdp",
+    execution_mode: str = "tabby",
 ) -> dict:
     """Compile a recorded workflow session into a runnable FastMCP server.
 
@@ -58,11 +58,12 @@ def compile_workflow(
             (POST /credentials/request). Takes precedence over tabby_profile_id.
         profile_db_id: Tabby profile DB UUID for admin operations only.
             Never used for runtime credential requests.
-        execution_mode: "cdp" (default — operations run inside Tabby's browser
-            via CDP, cookies ride on `credentials: 'include'`) or "http" (legacy
-            — operations run in-process with httpx and credentials resolved from
-            Tabby's /credentials/request endpoint). Pick "http" only when CDP is
-            impossible (CORS, server-to-server endpoints, no live Tabby).
+        execution_mode: "tabby" (default — operations run inside Tabby's browser
+            via the POST /execute/fetch endpoint; cookies ride on
+            `credentials: 'include'`) or "http" (legacy — operations run in-process
+            with httpx and credentials resolved from Tabby's /credentials/request
+            endpoint). Pick "http" only when in-browser execution is impossible
+            (CORS, server-to-server endpoints, no live Tabby).
 
     Returns the manifest dict (same content as manifest.json).
     """
@@ -127,14 +128,14 @@ def compile_workflow(
             app_slug=app_slug,
         )
 
-    # ── 3. Write noui_runtime/auth.py (and cdp.py under CDP mode) ─────────────
+    # ── 3. Write noui_runtime/auth.py (and execute.py under tabby mode) ───────
     runtime_dir = out_path / "noui_runtime"
     runtime_dir.mkdir(exist_ok=True)
     (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
     (runtime_dir / "auth.py").write_text(
         generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
     )
-    if execution_mode == "cdp":
+    if execution_mode == "tabby":
         (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
 
     # ── 4. Write operations/*.py ──────────────────────────────────────────────
@@ -194,7 +195,7 @@ def compile_workflow(
         *op_files,
         "API.md",
     ]
-    if execution_mode == "cdp":
+    if execution_mode == "tabby":
         all_files.append("noui_runtime/execute.py")
     if auth_plan:
         all_files.append("auth_plan.json")
@@ -213,7 +214,7 @@ def compile_workflow(
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
     execution_strategy = (
-        "tabby_execute_fetch" if execution_mode == "cdp" else resolved_auth_strategy
+        "tabby_execute_fetch" if execution_mode == "tabby" else resolved_auth_strategy
     )
 
     manifest: dict = {
@@ -327,11 +328,11 @@ def _render_server(*, app_name: str, tool_defs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _render_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp") -> str:
+def _render_operation(td: dict, *, auth_plan: dict, execution_mode: str = "tabby") -> str:
     """Render a single operation module.
 
     Two execution modes:
-      - "cdp" (default): the operation calls Tabby's POST /execute/fetch
+      - "tabby" (default): the operation calls Tabby's POST /execute/fetch
         endpoint, which runs fetch() inside the authenticated browser via
         page.evaluate() with `credentials: 'include'`. Cookies and TLS
         fingerprint come from the real authenticated browser. No WebSocket,
@@ -344,12 +345,12 @@ def _render_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp")
         Recorded non-auth headers (Accept, Content-Type, etc.) are merged with
         live auth headers so they are not dropped.
     """
-    if execution_mode == "cdp":
-        return _render_operation_cdp(td, auth_plan=auth_plan)
+    if execution_mode == "tabby":
+        return _render_operation_tabby(td, auth_plan=auth_plan)
     return _render_operation_http(td, auth_plan=auth_plan)
 
 
-def _render_operation_cdp(td: dict, *, auth_plan: dict) -> str:
+def _render_operation_tabby(td: dict, *, auth_plan: dict) -> str:
     """Render an operation that executes inside Tabby's browser via execute/fetch."""
     name = td["name"]
     method = td["method"].upper()

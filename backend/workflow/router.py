@@ -294,10 +294,10 @@ async def export_workflow(
         description="ABCD capture session ID to use instead of workflow session data",
     ),
     execution_mode: str = Query(
-        "cdp",
+        "tabby",
         description=(
-            "Execution strategy: 'cdp' (default — operations run inside Tabby's "
-            "browser via CDP) or 'http' (legacy httpx + resolve_auth)."
+            "Execution strategy: 'tabby' (default — operations run inside Tabby's "
+            "browser via the /execute/fetch endpoint) or 'http' (legacy httpx + resolve_auth)."
         ),
     ),
     db: AsyncSession = Depends(get_db),
@@ -316,10 +316,10 @@ async def export_workflow(
             status_code=422,
             detail=f"Invalid `as` value {target!r}. Expected 'mcp', 'skill', or 'both'.",
         )
-    if execution_mode not in ("cdp", "http"):
+    if execution_mode not in ("tabby", "http"):
         raise HTTPException(
             status_code=422,
-            detail=(f"Invalid execution_mode {execution_mode!r}. Expected 'cdp' or 'http'."),
+            detail=(f"Invalid execution_mode {execution_mode!r}. Expected 'tabby' or 'http'."),
         )
 
     session, app_slug, har, click_dicts, url_dicts = await _load_compile_inputs(

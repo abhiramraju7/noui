@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from compiler.login.tabby_draft_generator import (
     _analyze_har,
+    build_app_template_payload,
     generate,
 )
 
@@ -70,6 +73,11 @@ class TestGenerate:
         result = generate(_session(app_name="My Cool App"), [], [])
         app = result["application_draft"]
         assert "my-cool-app" in app.get("profile_id", "") or "My Cool App" in str(app)
+
+    def test_application_draft_sets_execute_enabled(self) -> None:
+        # A4: execute_enabled must be true or /execute/fetch is dead in K8s.
+        result = generate(_session(), [], [])
+        assert result["application_draft"]["execute_enabled"] is True
 
     def _steps(self, result: dict) -> list[dict]:
         """Steps are in application_draft.login_config.steps."""
@@ -377,3 +385,83 @@ class TestAnalyzeHar:
         result = _analyze_har({"log": {"entries": []}})
         assert result["has_cookies"] is False
         assert result["auth_domains"] == []
+
+
+# ── build_app_template_payload() (A1) ────────────────────────────────────────
+
+
+class TestBuildAppTemplatePayload:
+    """The App Template emitter payload derived from the generated drafts."""
+
+    def _drafts(self) -> tuple[dict, dict]:
+        result = generate(
+            _session(app_name="My App", login_url="https://app.example.com/login"),
+            [_click(field_role="username"), _click(field_role="password", input_type="password")],
+            [_url_event("https://app.example.com/home")],
+        )
+        return result["application_draft"], result["service_profile_draft"]
+
+    def test_pattern_equals_profile_slug(self) -> None:
+        # CRITICAL invariant: profile_name_pattern MUST equal the runtime slug,
+        # or autoProvisionFromTemplate never matches.
+        app, prof = self._drafts()
+        payload = build_app_template_payload(app, prof)
+        assert payload["profile_name_pattern"] == prof["profile_id"]
+        assert payload["profile_name_pattern"] == "my-app"
+
+    def test_required_template_fields_present(self) -> None:
+        app, prof = self._drafts()
+        payload = build_app_template_payload(app, prof)
+        for key in (
+            "name",
+            "profile_name_pattern",
+            "login_config",
+            "keepalive_config",
+            "export_policy",
+            "browser_policy",
+            "notification_config",
+        ):
+            assert key in payload, f"template payload missing {key}"
+
+    def test_credential_types_folded_into_export_policy(self) -> None:
+        # autoProvisionFromTemplate clones credential_types from export_policy,
+        # not from a profile draft — so they must be folded in.
+        app, prof = self._drafts()
+        prof = {
+            **prof,
+            "credential_types": {
+                "cookies": [{"name": "sid", "volatility": "STABLE"}],
+                "headers": [],
+            },
+            "target_domains": ["app.example.com"],
+        }
+        payload = build_app_template_payload(app, prof)
+        assert payload["export_policy"]["credential_types"] == prof["credential_types"]
+        assert payload["export_policy"]["target_domains"] == ["app.example.com"]
+
+    def test_execute_enabled_true_by_default(self) -> None:
+        app, prof = self._drafts()
+        payload = build_app_template_payload(app, prof)
+        assert payload["execute_enabled"] is True
+
+    def test_execute_enabled_mirrors_app_draft(self) -> None:
+        app, prof = self._drafts()
+        app = {**app, "execute_enabled": False}
+        payload = build_app_template_payload(app, prof)
+        assert payload["execute_enabled"] is False
+
+    def test_missing_profile_id_raises(self) -> None:
+        app, prof = self._drafts()
+        prof = {k: v for k, v in prof.items() if k != "profile_id"}
+        with pytest.raises(ValueError, match="profile_id"):
+            build_app_template_payload(app, prof)
+
+    def test_browser_policy_defaults_when_absent(self) -> None:
+        app, prof = self._drafts()
+        payload = build_app_template_payload(app, prof)
+        # app draft has no browser_policy → safe default, not None.
+        assert payload["browser_policy"] == {
+            "clipboard": False,
+            "downloads": False,
+            "file_chooser": False,
+        }

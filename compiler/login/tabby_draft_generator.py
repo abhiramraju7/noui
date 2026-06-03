@@ -26,6 +26,28 @@ from typing import Any
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
+# Credential-type shape
+# ---------------------------------------------------------------------------
+
+# Tabby's credentials consumer iterates credential_types.cookies expecting
+# {name, volatility} objects (credentials.service.ts); a plain string array of
+# cookie names yields empty name/value for every cookie. Akamai/CDN tokens
+# rotate per request, so they are marked VOLATILE; everything else is STABLE.
+_VOLATILE_COOKIE_NAMES = frozenset({"bm_sz", "ak_bmsc", "bm_so", "bm_s", "_abck"})
+
+
+def _cookie_credential_types(cookie_names: list[str]) -> list[dict]:
+    """Convert cookie names into Tabby's required ``[{name, volatility}]`` shape."""
+    return [
+        {
+            "name": name,
+            "volatility": "VOLATILE" if name in _VOLATILE_COOKIE_NAMES else "STABLE",
+        }
+        for name in cookie_names
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Selector helpers
 # ---------------------------------------------------------------------------
 
@@ -201,6 +223,79 @@ def _analyze_har(har: dict | None) -> dict[str, Any]:
     result["set_cookie_headers"] = list(set(cookie_names))[:20]
     result["auth_header_names"] = list(set(auth_header_names))[:10]
     return result
+
+
+# ---------------------------------------------------------------------------
+# App Template payload (tenant-wide auto-provisioning)
+# ---------------------------------------------------------------------------
+
+
+def build_app_template_payload(
+    application_draft: dict[str, Any],
+    service_profile_draft: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive a Tabby App Template payload (``POST /admin/app-templates``).
+
+    A template is the tenant-wide, per-user auto-provisioning blueprint. When a
+    federated user (platform JWT, ``owner_user_id`` set) requests a ``profile_id``
+    that resolves to no profile, Tabby's ``autoProvisionFromTemplate`` looks up a
+    template by ``{tenant_id, profile_name_pattern}`` and clones a private
+    App+Profile+Session for that user.
+
+    Two correctness invariants this builder enforces:
+
+    1. ``profile_name_pattern`` MUST equal the runtime profile slug
+       (``service_profile_draft.profile_id``, which is what generated ops bake in
+       as ``PROFILE_SLUG``). If it differs, ``autoProvisionFromTemplate`` never
+       matches and every federated request 404s.
+    2. ``autoProvisionFromTemplate`` builds the cloned profile's
+       ``credential_types``/``target_domains`` from ``export_policy``, not from a
+       separate profile draft (the template has no profile-draft field). So the
+       profile draft's ``credential_types`` and ``target_domains`` are folded into
+       ``export_policy`` here, or every auto-provisioned user inherits empty
+       credential types.
+
+    Args:
+        application_draft: The ``application_draft`` dict from :func:`generate`.
+        service_profile_draft: The ``service_profile_draft`` dict from :func:`generate`.
+
+    Returns:
+        A dict ready to POST to ``/admin/app-templates``.
+    """
+    profile_slug = service_profile_draft.get("profile_id", "")
+    if not profile_slug:
+        raise ValueError(
+            "service_profile_draft.profile_id is required — it becomes the "
+            "template's profile_name_pattern and the runtime PROFILE_SLUG."
+        )
+
+    export_policy = dict(application_draft.get("export_policy") or {})
+    # Fold profile-draft fields into export_policy so autoProvisionFromTemplate
+    # clones working credential_types/target_domains onto each per-user profile.
+    credential_types = service_profile_draft.get("credential_types")
+    if credential_types is not None:
+        export_policy["credential_types"] = credential_types
+    target_domains = service_profile_draft.get("target_domains")
+    if target_domains is not None:
+        export_policy["target_domains"] = target_domains
+
+    return {
+        "name": application_draft.get("name") or profile_slug,
+        # MUST equal the runtime profile slug (PROFILE_SLUG) — the auto-provision
+        # match key. See invariant 1 above.
+        "profile_name_pattern": profile_slug,
+        "login_config": application_draft.get("login_config") or {},
+        "keepalive_config": application_draft.get("keepalive_config") or {},
+        "export_policy": export_policy,
+        "browser_policy": application_draft.get("browser_policy")
+        or {"clipboard": False, "downloads": False, "file_chooser": False},
+        "notification_config": application_draft.get("notification_config") or {},
+        # execute_enabled mirrors the app draft (A4): auto-provisioned apps default
+        # it to false, which breaks /execute/fetch in real K8s. The template entity
+        # has no field for it today (Tabby change documented in gaps.md A4), but we
+        # emit it so the value is carried the moment Tabby adds the column.
+        "execute_enabled": bool(application_draft.get("execute_enabled", True)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +635,10 @@ def generate(
     # ---- Infer credential_types ----
     credential_types: dict[str, list] = {"cookies": [], "headers": []}
     if har_analysis["set_cookie_headers"]:
-        credential_types["cookies"] = har_analysis["set_cookie_headers"]
+        credential_types["cookies"] = _cookie_credential_types(har_analysis["set_cookie_headers"])
     if har_analysis["auth_header_names"]:
+        # Headers are tolerated as plain names by Tabby's consumer (only cookies
+        # require the object shape), so they are left as a name list.
         credential_types["headers"] = har_analysis["auth_header_names"]
 
     # ---- Build Application draft ----
@@ -553,7 +650,11 @@ def generate(
         "export_policy": export_policy,
         "notification_config": {"channels": ["slack:#local-dev"]},
         "desired_session_count": 0,
-        "browser_policy": {"streaming_mode": "cdp"},
+        # execute_enabled must be true or the K8s worker Service + pod
+        # EXECUTE_ENABLED are never created and /execute/fetch 502s (defaults
+        # false). Locally this is masked by the .env.local EXECUTE_ENABLED
+        # override + LOCAL_WORKER_URL; in real K8s it is load-bearing. See A4.
+        "execute_enabled": True,
     }
 
     # ---- Build ServiceProfile draft ----

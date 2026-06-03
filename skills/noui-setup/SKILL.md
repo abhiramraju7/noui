@@ -63,7 +63,7 @@ Open `.env` and fill in:
 | Variable | Required | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Powers the MCP compiler's LLM calls |
-| `TABBY_API_URL` | Auth flows only | Tabby base URL (default: `http://localhost:8080`) |
+| `TABBY_API_URL` | Auth flows only | Tabby base URL (default: `http://localhost:8000`) |
 | `TABBY_ADMIN_TOKEN` | Local auth flows | Admin token for provisioning Tabby profiles (local only) |
 | `NOUI_PORT` | No | Backend port (default: `8002`) |
 
@@ -157,13 +157,15 @@ Start
 | `.venv/bin/python cli/main.py tabby stop [--infra]` | Stop the Tabby API (and optionally Docker Compose) |
 | `.venv/bin/python cli/main.py tabby setup` | Local Tabby provisioning: agent client + ServiceProfiles + write TABBY_* to `.env` |
 | `.venv/bin/python cli/main.py tabby setup --cloud` | Cloud/staging: verify the PAT→platform-JWT→Tabby round-trip and write ADOPT_*/TABBY_API_URL/`NOUI_TABBY_AUTH_MODE=platform_jwt` to `.env` (no admin token) |
+| `.venv/bin/python cli/main.py tabby setup --cloud --template-bundle <bundle.json>` | As above, plus provision a tenant-wide App Template so a profile slug auto-provisions per user |
+| `.venv/bin/python cli/main.py tabby template create <bundle.json> [--upsert]` | Emit (or upsert) a tenant-wide App Template from a login bundle |
 | `.venv/bin/python cli/main.py tabby session status` | Show browser session state for configured profiles |
 | `.venv/bin/python cli/main.py tabby session ensure` | Ensure a HEALTHY browser session exists |
 | `.venv/bin/python cli/main.py tabby session stop` | Stop the locally-running worker |
 
 > **Tabby setup (local)** — for authenticated app workflows against a local Tabby, run `tabby start` then `tabby setup` (interactive) to provision agent credentials and ServiceProfiles. This writes `TABBY_CLIENT_ID`, `TABBY_CLIENT_SECRET`, and `TABBY_API_URL` to `.env`. You still need `TABBY_ADMIN_TOKEN` (or `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` in `tabby/.env.local`) for the provisioning step.
 >
-> **Tabby setup (cloud/staging)** — run `tabby setup --cloud` instead. No local Tabby or admin token: it uses a platform **PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) to mint a platform JWT, exchanges it for a Tabby JWT, and on success writes `ADOPT_API_URL`, `TABBY_API_URL` and `NOUI_TABBY_AUTH_MODE=platform_jwt`. The generated MCP/skill runtime then authenticates the same way.
+> **Tabby setup (cloud/staging)** — run `tabby setup --cloud` instead. No local Tabby or admin token: it uses a platform **PAT** (`ADOPT_CLIENT_ID`/`ADOPT_CLIENT_SECRET` from `app.adopt.ai/dashboard#/admin-box/`) to mint a platform JWT, exchanges it for a Tabby JWT, and on success writes `ADOPT_API_URL`, `TABBY_API_URL` and `NOUI_TABBY_AUTH_MODE=platform_jwt`. The default `tabby` execution mode **now honors `platform_jwt` at runtime** (no need to fall back to `--execution-mode http`): when `ADOPT_*` are set (or the mode is explicit) it runs the platform→Tabby token-exchange and uses the federated, `owner_user_id`-carrying JWT. By itself, `--cloud` only verifies the round-trip and provisions no connection; pass `--template-bundle <bundle.json>` (or run `noui tabby template create <bundle.json>` / `noui login register --as-template`) to also provision a tenant-wide App Template so a profile slug auto-provisions per user. The end-to-end cloud auto-provision still needs a live cloud Tabby + a pending Tabby-side `execute_enabled` change. See `/noui-tabby-integration` → `reference/execute-and-runtime.md` (auth-mode × execution-mode matrix) and `reference/provisioning.md` (templates).
 
 ---
 

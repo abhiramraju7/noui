@@ -4,8 +4,8 @@ Two sections:
 - Legacy HTTP-mode invariants (execution_mode='http'): auth strategy drives
   resolve_auth() wiring, recorded headers merge with auth headers, unauth ops
   skip the auth import, etc.
-- CDP-mode invariants (default): operations import from noui_runtime.cdp and
-  call cdp_fetch; recorded static headers are still embedded; no httpx or
+- Tabby-mode invariants (default): operations import from noui_runtime.execute
+  and call execute_fetch; recorded static headers are still embedded; no httpx or
   resolve_auth appears.
 """
 
@@ -26,9 +26,9 @@ def _render_http(td: dict, *, auth_plan: dict) -> str:
     return _render_operation(td, auth_plan=auth_plan, execution_mode="http")
 
 
-def _render_cdp(td: dict, *, auth_plan: dict) -> str:
-    """Shorthand: render an operation in CDP mode (default)."""
-    return _render_operation(td, auth_plan=auth_plan, execution_mode="cdp")
+def _render_tabby(td: dict, *, auth_plan: dict) -> str:
+    """Shorthand: render an operation in tabby mode (default)."""
+    return _render_operation(td, auth_plan=auth_plan, execution_mode="tabby")
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -208,31 +208,31 @@ class TestOperationStructure:
         assert "resp.status_code" in src
 
 
-# ── CDP (default) mode ───────────────────────────────────────────────────────
+# ── Tabby (default) mode ──────────────────────────────────────────────────────
 
 
-class TestCdpModeRender:
+class TestTabbyModeRender:
     """Execute-fetch mode invariants for _render_operation (the default)."""
 
     def test_imports_execute_runtime(self) -> None:
-        src = _render_cdp(_simple_tool(), auth_plan=_tabby_auth_plan())
+        src = _render_tabby(_simple_tool(), auth_plan=_tabby_auth_plan())
         assert "from noui_runtime.execute import" in src
         assert "execute_fetch" in src
 
     def test_no_httpx_or_resolve_auth(self) -> None:
-        src = _render_cdp(_simple_tool(), auth_plan=_tabby_auth_plan())
+        src = _render_tabby(_simple_tool(), auth_plan=_tabby_auth_plan())
         assert "import httpx" not in src
         assert "resolve_auth" not in src
 
     def test_profile_slug_embedded(self) -> None:
         """PROFILE_SLUG must come from the auth_plan so execute_fetch can resolve the session."""
-        src = _render_cdp(
+        src = _render_tabby(
             _simple_tool(base_url="https://api.myapp.com"), auth_plan=_tabby_auth_plan()
         )
         assert "PROFILE_SLUG = 'example-bank'" in src
 
     def test_base_url_still_embedded(self) -> None:
-        src = _render_cdp(
+        src = _render_tabby(
             _simple_tool(base_url="https://api.myapp.com"), auth_plan=_tabby_auth_plan()
         )
         assert "https://api.myapp.com" in src
@@ -240,7 +240,7 @@ class TestCdpModeRender:
     def test_recorded_headers_preserved(self) -> None:
         """Recorded static headers must still be passed to execute_fetch."""
         tool = _simple_tool(request_headers=[{"name": "Accept", "value": "application/json"}])
-        src = _render_cdp(tool, auth_plan={})
+        src = _render_tabby(tool, auth_plan={})
         assert "'Accept'" in src or '"Accept"' in src
         assert "'application/json'" in src or '"application/json"' in src
 
@@ -248,11 +248,11 @@ class TestCdpModeRender:
         tool = _simple_tool(
             params=[{"name": "limit", "type": "int", "source": "query", "required": False}]
         )
-        src = _render_cdp(tool, auth_plan={})
+        src = _render_tabby(tool, auth_plan={})
         assert "urllib.parse.urlencode" in src
 
     def test_unauth_still_generates_execute_fetch(self) -> None:
         """Even with no auth, default mode still generates in-browser execution."""
-        src = _render_cdp(_simple_tool(), auth_plan={})
+        src = _render_tabby(_simple_tool(), auth_plan={})
         assert "execute_fetch" in src
         assert "PROFILE_SLUG" in src

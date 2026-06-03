@@ -58,7 +58,7 @@ def _compile(
     session_name: str = "Example Workflow",
     profile_slug: str = "",
     description_override: str = "",
-    execution_mode: str = "cdp",
+    execution_mode: str = "tabby",
 ) -> tuple[Path, dict]:
     tmp = Path(tempfile.mkdtemp())
     manifest = compile_workflow_to_skill(
@@ -336,7 +336,7 @@ class TestSharedRuntime:
 
 
 # ---------------------------------------------------------------------------
-# Execution mode — CDP default and HTTP opt-in
+# Execution mode — tabby default and HTTP opt-in
 # ---------------------------------------------------------------------------
 
 

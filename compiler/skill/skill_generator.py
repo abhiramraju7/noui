@@ -34,7 +34,7 @@ from compiler.runtime.execute_adapter import generate_execute_adapter
 from compiler.skill.operation_generator import render_skill_operation
 from compiler.skill.skill_md_generator import render_skill_md
 
-_VALID_EXECUTION_MODES = ("cdp", "http")
+_VALID_EXECUTION_MODES = ("tabby", "http")
 
 
 def compile_workflow_to_skill(
@@ -50,7 +50,7 @@ def compile_workflow_to_skill(
     profile_slug: str = "",
     profile_db_id: str = "",
     description_override: str = "",
-    execution_mode: str = "cdp",
+    execution_mode: str = "tabby",
     start_url: str = "",
 ) -> dict:
     """Compile a recorded workflow session into an installable Claude Code skill.
@@ -136,7 +136,7 @@ def compile_workflow_to_skill(
     (runtime_dir / "auth.py").write_text(
         generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
     )
-    if execution_mode == "cdp":
+    if execution_mode == "tabby":
         (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
 
     # 4. pyproject.toml + .python-version — per-skill Python environment (retro D1).
@@ -239,7 +239,7 @@ def compile_workflow_to_skill(
         "operations/__init__.py",
         *op_files,
     ]
-    if execution_mode == "cdp":
+    if execution_mode == "tabby":
         all_files.append("noui_runtime/execute.py")
     if auth_plan:
         all_files.append("auth_plan.json")
@@ -247,7 +247,7 @@ def compile_workflow_to_skill(
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
     execution_strategy = (
-        "tabby_execute_fetch" if execution_mode == "cdp" else resolved_auth_strategy
+        "tabby_execute_fetch" if execution_mode == "tabby" else resolved_auth_strategy
     )
 
     manifest: dict = {

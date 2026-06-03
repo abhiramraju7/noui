@@ -100,7 +100,7 @@ Fully automated workflow recording: the agent drives a real Chrome browser throu
 start backend → noui autopilot start
 → agent drives browser (get_page_summary → click/type/navigate)
 → noui autopilot stop → noui autopilot export
-  (defaults to CDP execution mode; pass --execution-mode http for legacy path)
+  (defaults to tabby execution mode; pass --execution-mode http for legacy path)
 ```
 
 Use when: you want hands-off recording of a site without manually operating the Chrome extension. Prereq: `/noui-setup` complete and Chrome open with the NoUI extension loaded.
@@ -115,12 +115,12 @@ Output: `server_id` → used in `/noui-generalize` or `/noui-generate-mcp`
 
 Make generated MCP tools **work** and **usable**. Covers two dimensions:
 
-1. **Execution strategy** — diagnose bot detection (Akamai/Cloudflare 429s), fix Tabby credential_types DB bugs, promote profiles to ACTIVE, HITL login fallback when CloakBrowser fails, and rewrite operations to use CDP browser-side fetch (bypasses TLS fingerprinting).
+1. **Execution strategy** — diagnose bot detection (Akamai/Cloudflare 429s), fix Tabby credential_types DB bugs, promote profiles to ACTIVE, HITL login fallback when CloakBrowser fails, and rewrite operations to use browser-side fetch via Tabby (bypasses TLS fingerprinting).
 2. **Interface cleanup** — rename raw API params (`f_sid`, `bl`, `reqid`) to natural-language names (`origin`, `destination`, `departure_date`) so any agent can invoke tools without domain knowledge.
 
 ```
 Phase 0: Test tool → works? skip to interface cleanup
-  ├─ 429 / bot detection → CDP fetch rewrite
+  ├─ 429 / bot detection → execute-fetch rewrite
   ├─ Empty credentials → fix credential_types DB format
   ├─ No active profile → promote STAGING → ACTIVE
   └─ Login didn't work → HITL login via chrome://inspect
@@ -165,6 +165,25 @@ skill install <skill_id> <agent>     → install for the target agent
 skill uninstall <skill_id> <agent>   → remove installed copy
 → The agent loads the skill on demand (restart behavior varies by agent)
 ```
+
+---
+
+### Reference — Tabby integration
+
+#### `/noui-tabby-integration`
+
+Reference documentation (not a pipeline phase) for how NoUI depends on Tabby. Read it to understand or debug the integration: how Apps, ServiceProfiles, and App Templates are created and scoped, why a profile ends up "creator-only" vs tenant-wide (the `owner_user_id` switch, agent-token vs platform-JWT reach), how the `/execute/fetch` + `/execute/browser` runtime resolves a live session, and the end-to-end integration gaps.
+
+```
+SKILL.md                          → entry point: the model, the creator-only vs tenant-wide reconciliation
+reference/concepts.md             → data model, two credential systems, owner_user_id scoping, auth modes
+reference/provisioning.md         → what NoUI provisions today (raw apps/profiles) vs the App-Template path
+reference/execute-and-runtime.md  → /execute/fetch + /execute/browser, session lifecycle, auth-mode × execution-mode matrix
+reference/gaps.md                 → prioritized end-to-end gap analysis (NoUI vs Tabby side)
+reference/troubleshooting.md      → symptom → cause → fix
+```
+
+Use when: provisioning a connection, deciding how to make one usable tenant-wide, or diagnosing a runtime `404`/`409`/`502`.
 
 ## CLI Reference
 

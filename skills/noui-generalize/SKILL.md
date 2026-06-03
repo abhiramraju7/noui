@@ -21,7 +21,7 @@ The generalization logic is identical for either output format:
 - **MCP output:** edit `workbench/mcp_servers/<app>/<server>/operations/<tool>.py` — the body of `async def execute(...)`. The FastMCP tool signature in `server.py` mirrors the execute() signature, so renaming params also requires updating the `server.py` decorator args.
 - **Skill output:** edit `workbench/skills/<app>/operations/<tool>.py` — the body of `async def execute(...)` *and* the `_build_parser()` argparse registrations, because the skill operation is a standalone CLI script. The `SKILL.md` body's command examples also reference the flag names, so update them too (or regenerate SKILL.md by re-running `workflow export --as skill --description-override "..."`).
 
-The Phase 0 execution diagnosis (bot detection, empty credentials, profile promotion) applies to both outputs unchanged — both runtimes share the same `noui_runtime/auth.py` and the same Tabby credential flow.
+The Phase 0 execution diagnosis (bot detection, empty credentials, profile promotion) applies to both outputs unchanged. Note the default `tabby` execution mode uses `noui_runtime/execute.py` (`execute_fetch` → Tabby `/execute/fetch`); only the legacy `--execution-mode http` path uses `noui_runtime/auth.py` (`resolve_auth` → `/credentials/request`).
 
 After generalizing a skill, use `/noui-generate-skill` (not `/noui-generate-mcp`) for install / test.
 
@@ -112,9 +112,11 @@ If 200 from execute/fetch but 429 from httpx → **confirmed TLS fingerprinting*
 
 ## Phase 1 — Fix Execution Strategy
 
-### Fix A — credential_types format bug
+### Fix A — credential_types format bug (legacy profiles only)
 
-After a fresh `login register`, the `service_profiles` table stores `credential_types.cookies` as a string array (`["cookie_a", "cookie_b"]`), but `credentials.service.ts` expects object arrays with `.name`. Every cookie comes back with empty name and value.
+NoUI now emits `credential_types.cookies` in Tabby's required `[{name, volatility}]` object form (fixed at the source in `compiler/login/tabby_draft_generator.py` and `compiler/mcp/auth_plan.py`), so **fresh `login register` runs are already correct** — you should not need this fix on a newly registered profile.
+
+It only applies to **profiles registered before that fix**, which stored `credential_types.cookies` as a plain string array (`["cookie_a", "cookie_b"]`). `credentials.service.ts` iterates cookies expecting objects with `.name`, so every cookie from such a profile comes back with empty name and value. (Only cookies are strict — Tabby tolerates header *names* as plain strings.) Remediate an affected legacy profile with:
 
 ```sql
 -- Run from tabby/ directory:
@@ -202,14 +204,15 @@ For the rationale (TLS fingerprinting, why browser-side execution, why
 
 When data is rendered by client-side JS and not available as a JSON API, the
 `execute_fetch` path won't work — you need to navigate and scrape the rendered
-DOM. This requires the Tabby `POST /execute/browser` endpoint (see the
-extensionless autopilot plan) which provides `navigate`, `get_page_summary`,
-and other Playwright commands over HTTP.
+DOM. Use the Tabby `POST /execute/browser` endpoint via the generated
+`execute_browser(profile_id, command, params)` helper, which provides
+`navigate`, `get_page_summary`, and the other Playwright commands over HTTP.
+`/execute/browser` is **live** today; the compiler does not auto-emit these
+calls yet, so hand-wiring is still required — see the Expedia demo
+(`operations/search_hotels.py`) for a working example.
 
-Until `execute/browser` is available, DOM-scraping requires manual hand-editing
-with direct CDP access (localhost:9222), which only works in local development.
-For production use, prefer discovering the underlying JSON API that the SPA
-consumes — it's almost always there, and `execute_fetch` handles it cleanly.
+Still, prefer discovering the underlying JSON API that the SPA consumes — it's
+almost always there, and `execute_fetch` handles it cleanly.
 
 > **Single browser instance caveat:** Tabby runs one CloakBrowser per session. Navigation changes the page — if keepalive actions need the homepage, coordinate or set keepalive to `dom_check` on `body` only.
 
@@ -357,7 +360,7 @@ Some SPAs acquire a short-lived bearer token in-memory (fetch from `/auth/init` 
 
 ### Workaround — Sniff the Authorization header
 
-The bearer token must be captured from the browser at runtime. Once the `POST /execute/browser` endpoint is available (extensionless autopilot plan), this can be done via `get_page_summary` or a targeted JS eval. Until then, this is a manual workaround requiring direct CDP access (localhost:9222, local dev only).
+The bearer token must be captured from the browser at runtime. Use the **live** `POST /execute/browser` endpoint via `execute_browser(profile_id, "get_page_summary", ...)` or a targeted JS eval to read it from the page.
 
 Reference implementation (10-line core):
 

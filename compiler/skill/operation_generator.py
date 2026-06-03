@@ -17,22 +17,22 @@ payloads: exits 2 (still prints the JSON). On success: exits 0.
 from __future__ import annotations
 
 
-def render_skill_operation(td: dict, *, auth_plan: dict, execution_mode: str = "cdp") -> str:
+def render_skill_operation(td: dict, *, auth_plan: dict, execution_mode: str = "tabby") -> str:
     """Render the full Python source for a single Skill operation.
 
     The rendered file is standalone-runnable: `python operations/<name>.py`
     works from inside the Skill directory, with `noui_runtime/` one level up.
 
     `execution_mode` matches the MCP compiler:
-      - "cdp" (default): execute inside Tabby's browser via execute/fetch endpoint
+      - "tabby" (default): execute inside Tabby's browser via the /execute/fetch endpoint
       - "http" (legacy): execute via httpx + resolve_auth()
     """
-    if execution_mode == "cdp":
-        return _render_skill_operation_cdp(td, auth_plan=auth_plan)
+    if execution_mode == "tabby":
+        return _render_skill_operation_tabby(td, auth_plan=auth_plan)
     return _render_skill_operation_http(td, auth_plan=auth_plan)
 
 
-def _render_skill_operation_cdp(td: dict, *, auth_plan: dict) -> str:
+def _render_skill_operation_tabby(td: dict, *, auth_plan: dict) -> str:
     """Render a skill op that executes inside Tabby's browser via execute/fetch."""
     name = td["name"]
     method = td["method"].upper()

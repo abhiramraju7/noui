@@ -20,6 +20,10 @@ from urllib.parse import urlparse
 
 _AUTH_HEADER_NAMES = frozenset({"authorization", "x-api-key", "x-auth-token"})
 _BEARER_RE = re.compile(r"^Bearer\s+\S+", re.IGNORECASE)
+# Cookies that rotate per request (Akamai/CDN) are marked VOLATILE in
+# credential_types; everything else STABLE. Tabby's consumer requires
+# {name, volatility} objects for cookies.
+_VOLATILE_COOKIE_NAMES = frozenset({"bm_sz", "ak_bmsc", "bm_so", "bm_s", "_abck"})
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -162,7 +166,13 @@ def generate_auth_plan(
         "tabby_export": {
             "credential_types": {
                 "headers": required_headers,
-                "cookies": required_cookies,
+                "cookies": [
+                    {
+                        "name": c,
+                        "volatility": "VOLATILE" if c in _VOLATILE_COOKIE_NAMES else "STABLE",
+                    }
+                    for c in required_cookies
+                ],
             },
             "runtime_identifier": profile_slug or app_slug,
         },

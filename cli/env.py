@@ -29,7 +29,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-DEFAULT_TABBY_API_HOST = "http://localhost:8080"
+DEFAULT_TABBY_API_HOST = "http://localhost:8000"
 
 _CLI_DIR = Path(__file__).resolve().parent
 _NOUI_ROOT = _CLI_DIR.parent

@@ -1,0 +1,84 @@
+{
+  "profile_slug": "freshbooks",
+  "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+  "strategy": "tabby_credentials",
+  "target_domains": [
+    "opus-ui.freshbooks.com",
+    "my.freshbooks.com",
+    "browser-intake-us5-datadoghq.com",
+    "rs.fullstory.com",
+    "bat.bing.com",
+    "www.google-analytics.com",
+    "analytics.freshbooks.com",
+    "j.clarity.ms",
+    "data.goal.freshbooks.com",
+    "cdn.plaid.com",
+    "static.fbot.me",
+    "campaign.fbot.me",
+    "static.ada.support",
+    "edge.fullstory.com",
+    "www.googletagmanager.com",
+    "www.gstatic.com",
+    "snap.licdn.com",
+    "api.s10h.io",
+    "www.google.com",
+    "googleads.g.doubleclick.net",
+    "www.google.co.in",
+    "px.ads.linkedin.com",
+    "www.clarity.ms",
+    "scripts.clarity.ms",
+    "cdn.pendo.io",
+    "dev.visualwebsiteoptimizer.com",
+    "api.freshbooks.com",
+    "www2.freshbooks.com",
+    "public.fbot.me",
+    "content.goal.freshbooks.com"
+  ],
+  "required_auth": {
+    "headers": [
+      "Authorization"
+    ],
+    "cookies": [
+      "__Secure-3PAPISID",
+      "__Secure-3PSID",
+      "_switch_session_id",
+      "session-expiration_time",
+      "smux_login",
+      "smux_last_login",
+      "_auth_session",
+      "session",
+      "FPGSID",
+      "_switch_session",
+      "_uetsid"
+    ]
+  },
+  "observed_workflow_headers": {
+    "Authorization": {
+      "source": "workflow_har",
+      "scheme": "Bearer",
+      "value_redacted": true
+    }
+  },
+  "tabby_export": {
+    "credential_types": {
+      "headers": [
+        "Authorization"
+      ],
+      "cookies": [
+        "__Secure-3PAPISID",
+        "__Secure-3PSID",
+        "_switch_session_id",
+        "session-expiration_time",
+        "smux_login",
+        "smux_last_login",
+        "_auth_session",
+        "session",
+        "FPGSID",
+        "_switch_session",
+        "_uetsid"
+      ]
+    },
+    "runtime_identifier": "freshbooks"
+  },
+  "fallbacks": []
+}

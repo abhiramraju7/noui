@@ -1,0 +1,71 @@
+{
+  "schema_version": "1",
+  "skill_id": "freshbooks-reports",
+  "app": {
+    "name": "FreshBooks Reports",
+    "slug": "freshbooks-reports"
+  },
+  "workflow": {
+    "id": "freshbooks-reports",
+    "name": "FreshBooks Reports",
+    "workflow_session_id": "3780a8b3-5f9c-48ed-b654-a332e1f5ffca",
+    "start_url": "https://my.freshbooks.com/#/reports"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "get_profit_and_loss",
+      "description": "Fetch the FreshBooks Profit & Loss report for a date range: company income, expenses, gross margin, and net profit.",
+      "module": "operations/get_profit_and_loss.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/businesses/{business_uuid}/reports/profit_and_loss",
+      "args": [
+        {"name": "start_date", "type": "string", "required": true},
+        {"name": "end_date", "type": "string", "required": true},
+        {"name": "currency_code", "type": "string", "required": false},
+        {"name": "cash_based", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "get_sales_tax_summary",
+      "description": "Fetch the FreshBooks Sales Tax Summary report for a date range: tax collected and net tax per tax name, total invoiced, and total tax collected.",
+      "module": "operations/get_sales_tax_summary.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/account/{account_id}/reports/accounting/taxsummary",
+      "args": [
+        {"name": "start_date", "type": "string", "required": true},
+        {"name": "end_date", "type": "string", "required": true},
+        {"name": "currency_code", "type": "string", "required": false},
+        {"name": "cash_based", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "get_accounts_receivable_aging",
+      "description": "Fetch the FreshBooks Accounts Receivable (A/R) aging report for a date range: per-client outstanding balances bucketed by age (0-30, 31-60, 61-90, 91+ days), plus bucket totals and total outstanding.",
+      "module": "operations/get_accounts_receivable_aging.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/account/{account_id}/reports/accounting/accounts_aging",
+      "args": [
+        {"name": "start_date", "type": "string", "required": true},
+        {"name": "end_date", "type": "string", "required": true},
+        {"name": "currency_code", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

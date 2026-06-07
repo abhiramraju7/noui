@@ -1,0 +1,17 @@
+[project]
+name = "freshbooks-reports"
+version = "0.1.0"
+description = "NoUI-generated skill for FreshBooks accounting reports."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=12",
+]
+
+[tool.uv]
+package = false
+
+# Deps-only install: there is no importable top-level package to build here
+# (operations/ and noui_runtime/ are run in-place), so disable package discovery.
+[tool.setuptools]
+py-modules = []

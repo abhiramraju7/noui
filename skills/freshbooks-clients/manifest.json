@@ -1,0 +1,60 @@
+{
+  "schema_version": "1",
+  "skill_id": "freshbooks-clients",
+  "app": {
+    "name": "FreshBooks Clients",
+    "slug": "freshbooks-clients"
+  },
+  "workflow": {
+    "id": "freshbooks-clients",
+    "name": "Clients",
+    "start_url": "https://my.freshbooks.com/#/clients"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_clients",
+      "description": "List clients for the authenticated FreshBooks account, with an optional name/organization/email filter. Returns id, organization, name, email, currency, country, and city.",
+      "module": "operations/list_clients.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/account/o8QvP0/users/clients",
+      "args": [
+        {"name": "query", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false},
+        {"name": "per_page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_client",
+      "description": "Create a new client (customer) in FreshBooks with organization, contact name, email, currency, phone, and billing city/country.",
+      "module": "operations/create_client.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/accounting/account/o8QvP0/users/clients",
+      "args": [
+        {"name": "organization", "type": "string", "required": false},
+        {"name": "first_name", "type": "string", "required": false},
+        {"name": "last_name", "type": "string", "required": false},
+        {"name": "email", "type": "string", "required": false},
+        {"name": "currency_code", "type": "string", "required": false},
+        {"name": "phone", "type": "string", "required": false},
+        {"name": "city", "type": "string", "required": false},
+        {"name": "country", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

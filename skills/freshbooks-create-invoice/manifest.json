@@ -1,0 +1,50 @@
+{
+  "schema_version": "1",
+  "skill_id": "freshbooks-create-invoice",
+  "app": {
+    "name": "FreshBooks Create Invoice",
+    "slug": "freshbooks-create-invoice"
+  },
+  "workflow": {
+    "id": "freshbooks-create-invoice",
+    "name": "Create Invoice",
+    "start_url": "https://my.freshbooks.com/#/invoices"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "create_invoice",
+      "description": "Create (and optionally send) a FreshBooks invoice for a client. Resolves the client by name, builds line items with optional tax, and returns the new invoice number, amount, and status.",
+      "module": "operations/create_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/accounting/account/o8QvP0/invoices/invoices",
+      "args": [
+        {"name": "client", "type": "string", "required": true},
+        {"name": "name", "type": "string", "required": false},
+        {"name": "qty", "type": "number", "required": false},
+        {"name": "unit_cost", "type": "number", "required": false},
+        {"name": "description", "type": "string", "required": false},
+        {"name": "tax_name", "type": "string", "required": false},
+        {"name": "tax_rate", "type": "number", "required": false},
+        {"name": "lines", "type": "array", "required": false},
+        {"name": "create_date", "type": "string", "required": false},
+        {"name": "currency_code", "type": "string", "required": false},
+        {"name": "send", "type": "boolean", "required": false}
+      ]
+    }
+  ]
+}

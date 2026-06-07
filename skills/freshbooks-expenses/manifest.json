@@ -1,0 +1,57 @@
+{
+  "schema_version": "1",
+  "skill_id": "freshbooks-expenses",
+  "app": {
+    "name": "FreshBooks Expenses",
+    "slug": "freshbooks-expenses"
+  },
+  "workflow": {
+    "id": "freshbooks-expenses",
+    "name": "Expenses",
+    "start_url": "https://my.freshbooks.com/#/expenses"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_expenses",
+      "description": "List expenses for the authenticated FreshBooks account. Returns id, vendor, amount, currency, category name, date, and notes.",
+      "module": "operations/list_expenses.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/account/o8QvP0/expenses/expenses",
+      "args": [
+        {"name": "page", "type": "integer", "required": false},
+        {"name": "per_page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_expense",
+      "description": "Record a new expense in FreshBooks. Category is given by name and resolved to a category id; the expense owner (staff id) is resolved automatically. Returns the created expense.",
+      "module": "operations/create_expense.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/accounting/account/o8QvP0/expenses/expenses",
+      "args": [
+        {"name": "amount", "type": "number", "required": true},
+        {"name": "category", "type": "string", "required": true},
+        {"name": "vendor", "type": "string", "required": false},
+        {"name": "date", "type": "string", "required": false},
+        {"name": "currency_code", "type": "string", "required": false},
+        {"name": "notes", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

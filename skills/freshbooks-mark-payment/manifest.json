@@ -1,0 +1,45 @@
+{
+  "schema_version": "1",
+  "skill_id": "freshbooks-mark-payment",
+  "app": {
+    "name": "FreshBooks Mark Payment",
+    "slug": "freshbooks-mark-payment"
+  },
+  "workflow": {
+    "id": "freshbooks-mark-payment",
+    "name": "Mark Payment",
+    "start_url": "https://my.freshbooks.com/#/invoices"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "mark_payment",
+      "description": "Record a payment against an existing FreshBooks invoice, marking it paid or partially paid. Invoice is resolved by number or id; amount defaults to the full outstanding balance. Returns the payment and the invoice's new status/outstanding.",
+      "module": "operations/mark_payment.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/accounting/account/{account_id}/payments/payments",
+      "args": [
+        {"name": "invoice", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": false},
+        {"name": "payment_type", "type": "string", "required": false},
+        {"name": "date", "type": "string", "required": false},
+        {"name": "note", "type": "string", "required": false},
+        {"name": "currency_code", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

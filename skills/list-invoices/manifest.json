@@ -1,0 +1,56 @@
+{
+  "schema_version": "1",
+  "skill_id": "list-invoices",
+  "app": {
+    "name": "FreshBooks List Invoices",
+    "slug": "list-invoices"
+  },
+  "workflow": {
+    "id": "list-invoices",
+    "name": "List Invoices",
+    "workflow_session_id": "dfa72bff-d0ea-4f04-b96f-58f1626479fa",
+    "start_url": "https://my.freshbooks.com/#/invoices"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "freshbooks",
+    "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session",
+    "auth_plan_file": "auth_plan.json"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_invoices",
+      "description": "List invoices for the authenticated FreshBooks account. Returns invoice number, client, amount, currency, display status, create date, and due date. Optionally filter by status.",
+      "module": "operations/list_invoices.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/accounting/account/o8QvP0/invoices/invoices",
+      "args": [
+        {
+          "name": "status",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "per_page",
+          "type": "integer",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

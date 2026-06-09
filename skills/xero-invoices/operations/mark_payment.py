@@ -149,9 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--invoice-id", required=True, dest="invoice_id", help="Invoice id.")
     parser.add_argument("--amount", required=True, type=float, help="Payment amount.")
-    parser.add_argument(
-        "--account", required=True, help="Deposit account id, code, or name."
-    )
+    parser.add_argument("--account", required=True, help="Deposit account id, code, or name.")
     parser.add_argument("--date", dest="payment_date", help="Payment date YYYY-MM-DD.")
     parser.add_argument("--reference", default="", help="Optional payment reference.")
     return parser

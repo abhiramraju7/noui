@@ -51,9 +51,7 @@ async def execute(status: str = "ALL", page: int = 1) -> dict:
     if res.get("status") == 404 and "NULL" in body:
         return await _list_via_latest(ws_url, headers, status)
     if res.get("status") != 200:
-        raise RuntimeError(
-            f"Xero invoice/find returned {res.get('status')}: {str(body)[:300]}"
-        )
+        raise RuntimeError(f"Xero invoice/find returned {res.get('status')}: {str(body)[:300]}")
 
     raw = json.loads(body) if body else []
     if isinstance(raw, dict):
@@ -100,8 +98,17 @@ async def _list_via_latest(ws_url, headers, status: str) -> dict:
         inv_id = (res.get("body") or "").strip().strip('"')
         if inv_id and inv_id != "null" and inv_id not in seen:
             seen.add(inv_id)
-            invoices.append({"id": inv_id, "status": st, "number": None,
-                             "contact": None, "total": None, "currency": None, "date": None})
+            invoices.append(
+                {
+                    "id": inv_id,
+                    "status": st,
+                    "number": None,
+                    "contact": None,
+                    "total": None,
+                    "currency": None,
+                    "date": None,
+                }
+            )
 
     return {
         "count": len(invoices),
@@ -118,7 +125,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="List invoices from the Xero Sales/Invoicing page API.",
     )
     parser.add_argument(
-        "--status", default="ALL",
+        "--status",
+        default="ALL",
         help="Status tab: ALL, DRAFT, AWAITING PAYMENT, PAID, etc.",
     )
     parser.add_argument("--page", type=int, default=1, help="1-based page number.")

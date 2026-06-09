@@ -59,7 +59,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="List the Xero chart of accounts.",
     )
     parser.add_argument(
-        "--type", dest="account_type", default="",
+        "--type",
+        dest="account_type",
+        default="",
         help="Filter by account Type (REVENUE, EXPENSE, BANK, etc.).",
     )
     return parser

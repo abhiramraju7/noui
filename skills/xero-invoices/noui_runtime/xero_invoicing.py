@@ -85,7 +85,11 @@ async def _sniff_invoicing_headers(ws_url: str, shortcode: str) -> dict:
 async def get_invoicing_headers(force: bool = False) -> tuple[str, dict]:
     """Return ``(ws_url, headers)`` for ``go.xero.com/api/invoicing/*`` calls."""
     cached = _read_cache()
-    if not force and cached.get("headers") and cached.get("fetched_at", 0) + HEADER_TTL > time.time():
+    if (
+        not force
+        and cached.get("headers")
+        and cached.get("fetched_at", 0) + HEADER_TTL > time.time()
+    ):
         ws_url = await _find_page_ws()
         if ws_url:
             return ws_url, cached["headers"]

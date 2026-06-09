@@ -268,7 +268,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invoice-date", dest="invoice_date", help="YYYY-MM-DD")
     parser.add_argument("--due-date", dest="due_date", help="YYYY-MM-DD")
     parser.add_argument(
-        "--approve", action="store_true",
+        "--approve",
+        action="store_true",
         help="Create as AUTHORISED (approved) instead of DRAFT.",
     )
     return parser

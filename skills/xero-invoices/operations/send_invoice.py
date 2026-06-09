@@ -96,9 +96,7 @@ async def execute(
 
     to_addr = to or recipient.get("address")
     if not to_addr:
-        raise RuntimeError(
-            "No recipient email found on the invoice; pass --to explicitly."
-        )
+        raise RuntimeError("No recipient email found on the invoice; pass --to explicitly.")
     final_subject = subject or defaults.get("subject") or "Invoice from your supplier"
     final_message = message or defaults.get("message") or ""
     # The BFF expects HTML; wrap plain text overrides.

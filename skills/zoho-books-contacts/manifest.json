@@ -1,0 +1,57 @@
+{
+  "schema_version": "1",
+  "skill_id": "zoho-books-contacts",
+  "app": {
+    "name": "Zoho Books Contacts",
+    "slug": "zoho-books-contacts"
+  },
+  "workflow": {
+    "id": "zoho-books-contacts",
+    "name": "Contacts",
+    "start_url": "https://books.zoho.in"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "zoho-books",
+    "profile_db_id": "ac128c7c-d0d5-45d0-99e3-079c4ec32a86",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_contacts",
+      "description": "List contacts (customers/vendors) for the authenticated Zoho Books org, with an optional name filter and type filter. Returns id, name, company, email, type, status, outstanding.",
+      "module": "operations/list_contacts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/contacts",
+      "args": [
+        {"name": "query", "type": "string", "required": false},
+        {"name": "contact_type", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_contact",
+      "description": "Create a customer or vendor contact in Zoho Books with name, optional email, company, and phone.",
+      "module": "operations/create_contact.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/v3/contacts",
+      "args": [
+        {"name": "name", "type": "string", "required": true},
+        {"name": "email", "type": "string", "required": false},
+        {"name": "company", "type": "string", "required": false},
+        {"name": "contact_type", "type": "string", "required": false},
+        {"name": "phone", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

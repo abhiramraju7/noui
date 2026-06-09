@@ -1,0 +1,57 @@
+{
+  "schema_version": "1",
+  "skill_id": "zoho-books-expenses",
+  "app": {
+    "name": "Zoho Books Expenses",
+    "slug": "zoho-books-expenses"
+  },
+  "workflow": {
+    "id": "zoho-books-expenses",
+    "name": "Expenses",
+    "start_url": "https://books.zoho.in"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "zoho-books",
+    "profile_db_id": "ac128c7c-d0d5-45d0-99e3-079c4ec32a86",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_expenses",
+      "description": "List expenses for the authenticated Zoho Books org. Returns id, date, account, vendor, total, currency, status, and description.",
+      "module": "operations/list_expenses.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/expenses",
+      "args": [
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_expense",
+      "description": "Record an expense under an expense account, paid through a bank/cash account, optionally tied to a vendor. Accounts and vendor are resolved by name/id.",
+      "module": "operations/create_expense.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/v3/expenses",
+      "args": [
+        {"name": "account", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true},
+        {"name": "paid_through", "type": "string", "required": false},
+        {"name": "vendor", "type": "string", "required": false},
+        {"name": "expense_date", "type": "string", "required": false},
+        {"name": "description", "type": "string", "required": false},
+        {"name": "reference", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "schema_version": "1",
+  "skill_id": "zoho-books-accounting",
+  "app": {
+    "name": "Zoho Books Accounting",
+    "slug": "zoho-books-accounting"
+  },
+  "workflow": {
+    "id": "zoho-books-accounting",
+    "name": "Accounting",
+    "start_url": "https://books.zoho.in"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "zoho-books",
+    "profile_db_id": "ac128c7c-d0d5-45d0-99e3-079c4ec32a86",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "get_organization",
+      "description": "Get the Zoho Books organization profile: name, base currency, country, time zone, fiscal year start, and tax basis.",
+      "module": "operations/get_organization.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/organizations/{organization_id}",
+      "args": []
+    },
+    {
+      "name": "list_chart_of_accounts",
+      "description": "List the chart of accounts (id, code, name, type). Optional client-side filter by account_type substring (income, expense, bank, etc.).",
+      "module": "operations/list_chart_of_accounts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/chartofaccounts",
+      "args": [
+        {"name": "account_type", "type": "string", "required": false}
+      ]
+    },
+    {
+      "name": "list_taxes",
+      "description": "List tax rates (id, name, percentage, type) configured for the org.",
+      "module": "operations/list_taxes.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/settings/taxes",
+      "args": []
+    },
+    {
+      "name": "list_bank_accounts",
+      "description": "List bank/cash accounts (deposit and paid-through accounts) with id, name, type, currency, and balance.",
+      "module": "operations/list_bank_accounts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/bankaccounts",
+      "args": []
+    },
+    {
+      "name": "list_items",
+      "description": "List items (products/services) with id, name, rate, description, and tax.",
+      "module": "operations/list_items.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/items",
+      "args": [
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    }
+  ]
+}

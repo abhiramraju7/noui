@@ -1,0 +1,99 @@
+{
+  "schema_version": "1",
+  "skill_id": "zoho-books-invoices",
+  "app": {
+    "name": "Zoho Books Invoices",
+    "slug": "zoho-books-invoices"
+  },
+  "workflow": {
+    "id": "zoho-books-invoices",
+    "name": "Invoices",
+    "start_url": "https://books.zoho.in"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "zoho-books",
+    "profile_db_id": "ac128c7c-d0d5-45d0-99e3-079c4ec32a86",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_invoices",
+      "description": "List invoices for the authenticated Zoho Books org with an optional status filter (draft/sent/overdue/paid/unpaid/all). Returns id, number, customer, status, total, balance, currency, and dates.",
+      "module": "operations/list_invoices.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/invoices",
+      "args": [
+        {"name": "status", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "get_invoice",
+      "description": "Fetch one invoice by id, including line items and payment status.",
+      "module": "operations/get_invoice.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/v3/invoices/{invoice_id}",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true}
+      ]
+    },
+    {
+      "name": "create_invoice",
+      "description": "Create an invoice for a customer (resolved by name) with a single line item. Created as a draft; pass send=true to mark it Sent.",
+      "module": "operations/create_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/v3/invoices",
+      "args": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "description", "type": "string", "required": true},
+        {"name": "quantity", "type": "number", "required": false},
+        {"name": "rate", "type": "number", "required": false},
+        {"name": "invoice_date", "type": "string", "required": false},
+        {"name": "due_date", "type": "string", "required": false},
+        {"name": "send", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "email_invoice",
+      "description": "Email an invoice to its customer using Zoho's default template (or overrides). Emailing a draft marks it Sent.",
+      "module": "operations/email_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/v3/invoices/{invoice_id}/email",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "to", "type": "string", "required": false},
+        {"name": "subject", "type": "string", "required": false},
+        {"name": "body", "type": "string", "required": false}
+      ]
+    },
+    {
+      "name": "record_payment",
+      "description": "Record a customer payment against an invoice (marks it Paid when fully applied). Resolves the deposit account by name/id.",
+      "module": "operations/record_payment.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/v3/customerpayments",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true},
+        {"name": "account", "type": "string", "required": true},
+        {"name": "payment_date", "type": "string", "required": false},
+        {"name": "payment_mode", "type": "string", "required": false},
+        {"name": "reference", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

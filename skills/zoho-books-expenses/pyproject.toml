@@ -1,0 +1,12 @@
+[project]
+name = "zoho-books-expenses"
+version = "0.1.0"
+description = "NoUI-generated skill for listing and recording Zoho Books expenses."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=12",
+]
+
+[tool.uv]
+package = false

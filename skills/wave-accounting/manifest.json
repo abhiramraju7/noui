@@ -1,0 +1,61 @@
+{
+  "schema_version": "1",
+  "skill_id": "wave-accounting",
+  "app": {
+    "name": "Wave Accounting",
+    "slug": "wave-accounting"
+  },
+  "workflow": {
+    "id": "wave-accounting",
+    "name": "Accounting",
+    "start_url": "https://app.waveapps.com"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "wave",
+    "profile_db_id": "2af4d10c-00c3-484e-b8db-48eaca08fdc1",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "get_business",
+      "description": "Get the Wave business profile: name, currency, location, and accounting mode flags.",
+      "module": "operations/get_business.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": []
+    },
+    {
+      "name": "list_accounts",
+      "description": "List chart of accounts entries (id, name, type, subtype, balance). Optional filter by account type (INCOME/EXPENSE/ASSET/...).",
+      "module": "operations/list_accounts.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "account_type", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "list_products",
+      "description": "List products/services (id, name, unit price, sold/bought flags).",
+      "module": "operations/list_products.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    }
+  ]
+}

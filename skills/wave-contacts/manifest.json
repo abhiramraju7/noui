@@ -1,0 +1,54 @@
+{
+  "schema_version": "1",
+  "skill_id": "wave-contacts",
+  "app": {
+    "name": "Wave Contacts",
+    "slug": "wave-contacts"
+  },
+  "workflow": {
+    "id": "wave-contacts",
+    "name": "Customers",
+    "start_url": "https://app.waveapps.com"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "wave",
+    "profile_db_id": "2af4d10c-00c3-484e-b8db-48eaca08fdc1",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_customers",
+      "description": "List customers for the authenticated Wave business via GraphQL. Returns id, name, email, phone, outstanding.",
+      "module": "operations/list_customers.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "query", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_customer",
+      "description": "Create a customer in Wave with name and optional email/phone.",
+      "module": "operations/create_customer.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "name", "type": "string", "required": true},
+        {"name": "email", "type": "string", "required": false},
+        {"name": "phone", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

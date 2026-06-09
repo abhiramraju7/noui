@@ -1,0 +1,98 @@
+{
+  "schema_version": "1",
+  "skill_id": "wave-invoices",
+  "app": {
+    "name": "Wave Invoices",
+    "slug": "wave-invoices"
+  },
+  "workflow": {
+    "id": "wave-invoices",
+    "name": "Invoices",
+    "start_url": "https://app.waveapps.com"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "wave",
+    "profile_db_id": "2af4d10c-00c3-484e-b8db-48eaca08fdc1",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_invoices",
+      "description": "List invoices for the authenticated Wave business. Returns id, number, customer, status, total, balance, currency, and dates.",
+      "module": "operations/list_invoices.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "customer_id", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "get_invoice",
+      "description": "Fetch one invoice by id, including line items and payment status.",
+      "module": "operations/get_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true}
+      ]
+    },
+    {
+      "name": "create_invoice",
+      "description": "Create an invoice for a customer (resolved by name) with one line item. Auto-creates a sold product if needed. Pass send=true to email via invoiceSend.",
+      "module": "operations/create_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "description", "type": "string", "required": true},
+        {"name": "quantity", "type": "number", "required": false},
+        {"name": "unit_price", "type": "number", "required": false},
+        {"name": "invoice_date", "type": "string", "required": false},
+        {"name": "due_date", "type": "string", "required": false},
+        {"name": "send", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "send_invoice",
+      "description": "Email an invoice via invoiceSend (requires Business.emailSendEnabled). Uses customer email unless --to is passed.",
+      "module": "operations/send_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "to", "type": "string", "required": false},
+        {"name": "subject", "type": "string", "required": false},
+        {"name": "message", "type": "string", "required": false}
+      ]
+    },
+    {
+      "name": "record_payment",
+      "description": "Record a manual payment against an invoice via invoicePaymentCreateManual. Resolves the payment account by name/id.",
+      "module": "operations/record_payment.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/graphql/public",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true},
+        {"name": "account", "type": "string", "required": true},
+        {"name": "payment_date", "type": "string", "required": false},
+        {"name": "payment_method", "type": "string", "required": false}
+      ]
+    }
+  ]
+}

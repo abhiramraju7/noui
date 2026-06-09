@@ -1,0 +1,76 @@
+{
+  "schema_version": "1",
+  "skill_id": "xero-accounting",
+  "app": {
+    "name": "Xero Accounting",
+    "slug": "xero-accounting"
+  },
+  "workflow": {
+    "id": "xero-accounting",
+    "name": "Accounting",
+    "start_url": "https://go.xero.com"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "xero",
+    "profile_db_id": "227df98f-55b3-4b64-84e7-db18fa294f7c",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "get_organisation",
+      "description": "Get Xero organisation profile: name, base currency, country, edition, tax settings, financial year end, and next invoice/credit note/PO numbers.",
+      "module": "operations/get_organisation.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/Organisation",
+      "args": []
+    },
+    {
+      "name": "list_accounts",
+      "description": "List the chart of accounts (code, name, type, class, tax type). Optional filter by account type (REVENUE, EXPENSE, BANK, etc.).",
+      "module": "operations/list_accounts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/Accounts",
+      "args": [
+        {"name": "account_type", "type": "string", "required": false}
+      ]
+    },
+    {
+      "name": "list_tax_rates",
+      "description": "List tax rates with tax type, effective rate, applicability flags, and components.",
+      "module": "operations/list_tax_rates.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/TaxRates",
+      "args": []
+    },
+    {
+      "name": "list_branding_themes",
+      "description": "List invoice branding themes (id required for invoice creation).",
+      "module": "operations/list_branding_themes.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/BrandingThemes",
+      "args": []
+    },
+    {
+      "name": "list_purchase_orders",
+      "description": "List purchase orders: number, supplier, status, total, currency, and date.",
+      "module": "operations/list_purchase_orders.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/PurchaseOrders",
+      "args": []
+    }
+  ]
+}

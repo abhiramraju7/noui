@@ -1,0 +1,55 @@
+{
+  "schema_version": "1",
+  "skill_id": "xero-contacts",
+  "app": {
+    "name": "Xero Contacts",
+    "slug": "xero-contacts"
+  },
+  "workflow": {
+    "id": "xero-contacts",
+    "name": "Contacts",
+    "start_url": "https://go.xero.com"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "xero",
+    "profile_db_id": "227df98f-55b3-4b64-84e7-db18fa294f7c",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_contacts",
+      "description": "List contacts for the authenticated Xero organisation, with an optional name/email filter. Returns id, name, email, status, and customer/supplier flags.",
+      "module": "operations/list_contacts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api.xro/2.0/Contacts",
+      "args": [
+        {"name": "query", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "create_contact",
+      "description": "Create a new contact in Xero with name, email, and optional customer/supplier flags.",
+      "module": "operations/create_contact.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api.xro/2.0/Contacts",
+      "args": [
+        {"name": "name", "type": "string", "required": true},
+        {"name": "email", "type": "string", "required": false},
+        {"name": "is_customer", "type": "boolean", "required": false},
+        {"name": "is_supplier", "type": "boolean", "required": false}
+      ]
+    }
+  ]
+}

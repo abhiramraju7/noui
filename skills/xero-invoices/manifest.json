@@ -1,0 +1,130 @@
+{
+  "schema_version": "1",
+  "skill_id": "xero-invoices",
+  "app": {
+    "name": "Xero Sales Invoices",
+    "slug": "xero-invoices"
+  },
+  "workflow": {
+    "id": "xero-invoices",
+    "name": "Sales Invoices",
+    "start_url": "https://go.xero.com/app/invoicing/?optInAndDefaultToNew=true",
+    "workflow_session_id": "b76f8563-bb8b-4399-8562-7ec8711bb7a1"
+  },
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "xero",
+    "profile_db_id": "227df98f-55b3-4b64-84e7-db18fa294f7c",
+    "strategy": "tabby_credentials",
+    "execution_strategy": "cdp_browser_session"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "python": ">=3.11",
+    "python_executable": ".venv/bin/python"
+  },
+  "operations": [
+    {
+      "name": "list_invoices",
+      "description": "List invoices from the Xero Sales > Invoices page (same BFF as the UI). Returns id, number, contact, status, total, currency, and date. Empty list when no invoices exist.",
+      "module": "operations/list_invoices.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/invoicing/invoice/find",
+      "args": [
+        {"name": "status", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "list_invoice_customers",
+      "description": "List customers from the Xero Sales invoice customer picker (same BFF as the UI). Returns id, name, and email.",
+      "module": "operations/list_invoice_customers.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/invoicing/customer/find",
+      "args": [
+        {"name": "query", "type": "string", "required": false},
+        {"name": "page", "type": "integer", "required": false}
+      ]
+    },
+    {
+      "name": "get_invoice_settings",
+      "description": "Fetch org invoice settings from the Sales/Invoicing page load (currency, country, default tax basis).",
+      "module": "operations/get_invoice_settings.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/invoicing/appData",
+      "args": []
+    },
+    {
+      "name": "list_tax_rates",
+      "description": "List tax rates available when creating invoices on the Sales page.",
+      "module": "operations/list_tax_rates.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/invoicing/taxRateAce",
+      "args": []
+    },
+    {
+      "name": "create_invoice",
+      "description": "Create a draft invoice via the Xero Sales/Invoicing BFF (POST invoice/create). Resolves customer by name; one line item with description, quantity, and unit price.",
+      "module": "operations/create_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/invoicing/invoice/create",
+      "args": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "description", "type": "string", "required": true},
+        {"name": "quantity", "type": "number", "required": false},
+        {"name": "unit_price", "type": "number", "required": false},
+        {"name": "account_code", "type": "string", "required": false},
+        {"name": "invoice_date", "type": "string", "required": false},
+        {"name": "due_date", "type": "string", "required": false},
+        {"name": "approve", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "send_invoice",
+      "description": "Email an approved (AUTHORISED) invoice to its customer via the Sales BFF (POST invoice/email). Uses the org's default email template, subject, body, and recipient, with optional overrides.",
+      "module": "operations/send_invoice.py",
+      "entry": "execute",
+      "method": "POST",
+      "path": "/api/invoicing/invoice/email",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "to", "type": "string", "required": false},
+        {"name": "subject", "type": "string", "required": false},
+        {"name": "message", "type": "string", "required": false},
+        {"name": "attach_pdf", "type": "boolean", "required": false},
+        {"name": "send_me_a_copy", "type": "boolean", "required": false}
+      ]
+    },
+    {
+      "name": "mark_payment",
+      "description": "Record a payment against an invoice via the accounting API (PUT api.xro/2.0/payments). Resolves the deposit account by id, code, or name.",
+      "module": "operations/mark_payment.py",
+      "entry": "execute",
+      "method": "PUT",
+      "path": "/api.xro/2.0/payments",
+      "args": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true},
+        {"name": "account", "type": "string", "required": true},
+        {"name": "payment_date", "type": "string", "required": false},
+        {"name": "reference", "type": "string", "required": false}
+      ]
+    },
+    {
+      "name": "list_sales_accounts",
+      "description": "List sales/revenue accounts for invoice line items from the Sales page.",
+      "module": "operations/list_sales_accounts.py",
+      "entry": "execute",
+      "method": "GET",
+      "path": "/api/invoicing/account",
+      "args": []
+    }
+  ]
+}

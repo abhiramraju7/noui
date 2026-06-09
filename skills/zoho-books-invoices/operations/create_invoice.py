@@ -49,7 +49,12 @@ async def execute(
     payload: dict = {
         "customer_id": cust["contact_id"],
         "line_items": [
-            {"name": description[:100], "description": description, "rate": rate, "quantity": quantity}
+            {
+                "name": description[:100],
+                "description": description,
+                "rate": rate,
+                "quantity": quantity,
+            }
         ],
     }
     if invoice_date:
@@ -81,14 +86,18 @@ async def execute(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="create_invoice", description="Create a Zoho Books invoice.")
+    parser = argparse.ArgumentParser(
+        prog="create_invoice", description="Create a Zoho Books invoice."
+    )
     parser.add_argument("--customer", required=True, help="Customer name or contact_id.")
     parser.add_argument("--description", required=True, help="Line item description.")
     parser.add_argument("--quantity", type=float, default=1.0, help="Line item quantity.")
     parser.add_argument("--rate", type=float, default=0.0, help="Line item unit price.")
     parser.add_argument("--date", dest="invoice_date", default="", help="Invoice date YYYY-MM-DD.")
     parser.add_argument("--due-date", dest="due_date", default="", help="Due date YYYY-MM-DD.")
-    parser.add_argument("--send", action="store_true", help="Mark the invoice as Sent after creating.")
+    parser.add_argument(
+        "--send", action="store_true", help="Mark the invoice as Sent after creating."
+    )
     return parser
 
 
@@ -97,8 +106,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(
             execute(
-                customer=args.customer, description=args.description, quantity=args.quantity,
-                rate=args.rate, invoice_date=args.invoice_date, due_date=args.due_date, send=args.send,
+                customer=args.customer,
+                description=args.description,
+                quantity=args.quantity,
+                rate=args.rate,
+                invoice_date=args.invoice_date,
+                due_date=args.due_date,
+                send=args.send,
             )
         )
     except Exception as exc:

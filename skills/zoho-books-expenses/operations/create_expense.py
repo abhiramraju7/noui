@@ -83,10 +83,17 @@ async def execute(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="create_expense", description="Record a Zoho Books expense.")
+    parser = argparse.ArgumentParser(
+        prog="create_expense", description="Record a Zoho Books expense."
+    )
     parser.add_argument("--account", required=True, help="Expense account name or id.")
     parser.add_argument("--amount", type=float, required=True, help="Expense amount.")
-    parser.add_argument("--paid-through", dest="paid_through", default="Petty Cash", help="Bank/cash account paid from.")
+    parser.add_argument(
+        "--paid-through",
+        dest="paid_through",
+        default="Petty Cash",
+        help="Bank/cash account paid from.",
+    )
     parser.add_argument("--vendor", default="", help="Vendor name or contact_id.")
     parser.add_argument("--date", dest="expense_date", default="", help="Expense date YYYY-MM-DD.")
     parser.add_argument("--description", default="", help="Note.")
@@ -99,8 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(
             execute(
-                account=args.account, amount=args.amount, paid_through=args.paid_through,
-                vendor=args.vendor, expense_date=args.expense_date, description=args.description,
+                account=args.account,
+                amount=args.amount,
+                paid_through=args.paid_through,
+                vendor=args.vendor,
+                expense_date=args.expense_date,
+                description=args.description,
                 reference=args.reference,
             )
         )

@@ -78,12 +78,19 @@ async def execute(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="record_payment", description="Record a Zoho Books invoice payment.")
+    parser = argparse.ArgumentParser(
+        prog="record_payment", description="Record a Zoho Books invoice payment."
+    )
     parser.add_argument("--invoice-id", dest="invoice_id", required=True, help="Invoice id.")
     parser.add_argument("--amount", type=float, required=True, help="Payment amount.")
     parser.add_argument("--account", required=True, help="Deposit account name or id.")
     parser.add_argument("--date", dest="payment_date", default="", help="Payment date YYYY-MM-DD.")
-    parser.add_argument("--mode", dest="payment_mode", default="cash", help="Payment mode (cash, banktransfer, check...).")
+    parser.add_argument(
+        "--mode",
+        dest="payment_mode",
+        default="cash",
+        help="Payment mode (cash, banktransfer, check...).",
+    )
     parser.add_argument("--reference", default="", help="Reference number.")
     return parser
 
@@ -93,8 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(
             execute(
-                invoice_id=args.invoice_id, amount=args.amount, account=args.account,
-                payment_date=args.payment_date, payment_mode=args.payment_mode, reference=args.reference,
+                invoice_id=args.invoice_id,
+                amount=args.amount,
+                account=args.account,
+                payment_date=args.payment_date,
+                payment_mode=args.payment_mode,
+                reference=args.reference,
             )
         )
     except Exception as exc:

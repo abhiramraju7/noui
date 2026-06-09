@@ -65,19 +65,26 @@ async def execute(
         "id": c.get("contact_id"),
         "name": c.get("contact_name"),
         "company": c.get("company_name"),
-        "email": (c.get("contact_persons") or [{}])[0].get("email") if c.get("contact_persons") else email,
+        "email": (c.get("contact_persons") or [{}])[0].get("email")
+        if c.get("contact_persons")
+        else email,
         "type": c.get("contact_type"),
         "status": c.get("status"),
     }
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="create_contact", description="Create a Zoho Books contact.")
+    parser = argparse.ArgumentParser(
+        prog="create_contact", description="Create a Zoho Books contact."
+    )
     parser.add_argument("--name", required=True, help="Contact display name.")
     parser.add_argument("--email", default="", help="Primary contact email.")
     parser.add_argument("--company", default="", help="Company name (defaults to --name).")
     parser.add_argument(
-        "--type", dest="contact_type", default="customer", choices=["customer", "vendor"],
+        "--type",
+        dest="contact_type",
+        default="customer",
+        choices=["customer", "vendor"],
         help="Contact type.",
     )
     parser.add_argument("--phone", default="", help="Phone number.")
@@ -89,8 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(
             execute(
-                name=args.name, email=args.email, company=args.company,
-                contact_type=args.contact_type, phone=args.phone,
+                name=args.name,
+                email=args.email,
+                company=args.company,
+                contact_type=args.contact_type,
+                phone=args.phone,
             )
         )
     except Exception as exc:

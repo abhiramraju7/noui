@@ -78,7 +78,9 @@ async def _sniff_csrf(ws_url: str, timeout: float = 20.0) -> str | None:
     async with websockets.connect(ws_url, max_size=None) as ws:
         await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
         await ws.send(json.dumps({"id": 2, "method": "Page.enable"}))
-        await ws.send(json.dumps({"id": 3, "method": "Page.reload", "params": {"ignoreCache": False}}))
+        await ws.send(
+            json.dumps({"id": 3, "method": "Page.reload", "params": {"ignoreCache": False}})
+        )
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:

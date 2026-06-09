@@ -53,9 +53,15 @@ async def execute(to_date: str = "", from_date: str = "") -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="balance_sheet", description="Zoho Books balance sheet report.")
-    parser.add_argument("--to-date", dest="to_date", default="", help="As-of date YYYY-MM-DD (default today).")
-    parser.add_argument("--from-date", dest="from_date", default="", help="Optional period start YYYY-MM-DD.")
+    parser = argparse.ArgumentParser(
+        prog="balance_sheet", description="Zoho Books balance sheet report."
+    )
+    parser.add_argument(
+        "--to-date", dest="to_date", default="", help="As-of date YYYY-MM-DD (default today)."
+    )
+    parser.add_argument(
+        "--from-date", dest="from_date", default="", help="Optional period start YYYY-MM-DD."
+    )
     return parser
 
 

@@ -50,7 +50,9 @@ async def execute(
 
     payload: dict = {
         "to_mail_ids": to_mail_ids,
-        "subject": subject or dd.get("subject") or f"Invoice from {dd.get('organization_name', '')}".strip(),
+        "subject": subject
+        or dd.get("subject")
+        or f"Invoice from {dd.get('organization_name', '')}".strip(),
         "body": body or dd.get("body") or "",
     }
     res = await books_request(f"invoices/{invoice_id}/email", method="POST", body=payload)
@@ -66,7 +68,9 @@ async def execute(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="email_invoice", description="Email a Zoho Books invoice.")
+    parser = argparse.ArgumentParser(
+        prog="email_invoice", description="Email a Zoho Books invoice."
+    )
     parser.add_argument("--invoice-id", dest="invoice_id", required=True, help="Invoice id.")
     parser.add_argument("--to", default="", help="Recipient override (comma-separated).")
     parser.add_argument("--subject", default="", help="Subject override.")

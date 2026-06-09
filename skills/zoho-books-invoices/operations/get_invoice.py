@@ -24,7 +24,9 @@ async def execute(invoice_id: str) -> dict:
     """Return full detail for one invoice."""
     res = await books_request(f"invoices/{invoice_id}")
     if res["status"] != 200:
-        raise RuntimeError(f"invoices/{invoice_id} returned {res['status']}: {str(res['body'])[:300]}")
+        raise RuntimeError(
+            f"invoices/{invoice_id} returned {res['status']}: {str(res['body'])[:300]}"
+        )
     inv = (res["body"] or {}).get("invoice") or {}
     return {
         "id": inv.get("invoice_id"),
@@ -37,7 +39,12 @@ async def execute(invoice_id: str) -> dict:
         "date": inv.get("date"),
         "due_date": inv.get("due_date"),
         "line_items": [
-            {"name": li.get("name"), "quantity": li.get("quantity"), "rate": li.get("rate"), "total": li.get("item_total")}
+            {
+                "name": li.get("name"),
+                "quantity": li.get("quantity"),
+                "rate": li.get("rate"),
+                "total": li.get("item_total"),
+            }
             for li in (inv.get("line_items") or [])
         ],
     }

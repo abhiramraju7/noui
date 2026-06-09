@@ -21,18 +21,34 @@ async def resolve_account_by_type(name: str, account_type: str = "") -> dict:
     if needle.isdigit() and len(needle) > 8:
         for a in rows:
             if str(a.get("account_id")) == needle:
-                return {"account_id": needle, "account_name": a.get("account_name", ""), "account_type": a.get("account_type")}
+                return {
+                    "account_id": needle,
+                    "account_name": a.get("account_name", ""),
+                    "account_type": a.get("account_type"),
+                }
         return {"account_id": needle, "account_name": "", "account_type": ""}
 
     low = needle.lower()
     for a in rows:
-        if (a.get("account_name") or "").lower() == low or str(a.get("account_code") or "") == needle:
-            return {"account_id": a.get("account_id"), "account_name": a.get("account_name"), "account_type": a.get("account_type")}
+        if (a.get("account_name") or "").lower() == low or str(
+            a.get("account_code") or ""
+        ) == needle:
+            return {
+                "account_id": a.get("account_id"),
+                "account_name": a.get("account_name"),
+                "account_type": a.get("account_type"),
+            }
     for a in rows:
         if low in (a.get("account_name") or "").lower():
-            return {"account_id": a.get("account_id"), "account_name": a.get("account_name"), "account_type": a.get("account_type")}
+            return {
+                "account_id": a.get("account_id"),
+                "account_name": a.get("account_name"),
+                "account_type": a.get("account_type"),
+            }
     names = ", ".join(a.get("account_name", "") for a in rows[:25]) or "(none)"
-    raise RuntimeError(f"No account matching {name!r} (type={account_type or 'any'}). Some available: {names}.")
+    raise RuntimeError(
+        f"No account matching {name!r} (type={account_type or 'any'}). Some available: {names}."
+    )
 
 
 async def resolve_paid_through(name: str) -> dict:
@@ -67,9 +83,11 @@ async def resolve_vendor(name: str) -> str | None:
     rows = (res["body"] or {}).get("contacts") or [] if res["status"] == 200 else []
     low = needle.lower()
     for c in rows:
-        if (c.get("contact_name") or "").lower() == low or (c.get("company_name") or "").lower() == low:
+        if (c.get("contact_name") or "").lower() == low or (
+            c.get("company_name") or ""
+        ).lower() == low:
             return c.get("contact_id")
     for c in rows:
-        if low in f"{c.get('contact_name','')} {c.get('company_name','')}".lower():
+        if low in f"{c.get('contact_name', '')} {c.get('company_name', '')}".lower():
             return c.get("contact_id")
     return None

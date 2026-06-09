@@ -38,7 +38,9 @@ async def execute(query: str = "", contact_type: str = "", page: int = 1) -> dic
         params["contact_type"] = contact_type
     res = await books_request("contacts", params=params)
     if res["status"] != 200:
-        raise RuntimeError(f"Zoho Books contacts API returned {res['status']}: {str(res['body'])[:300]}")
+        raise RuntimeError(
+            f"Zoho Books contacts API returned {res['status']}: {str(res['body'])[:300]}"
+        )
 
     raw = (res["body"] or {}).get("contacts") or []
     needle = query.strip().lower()
@@ -67,7 +69,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="list_contacts", description="List Zoho Books contacts.")
     parser.add_argument("--query", default="", help="Filter on name/company/email.")
     parser.add_argument(
-        "--type", dest="contact_type", default="", choices=["", "customer", "vendor"],
+        "--type",
+        dest="contact_type",
+        default="",
+        choices=["", "customer", "vendor"],
         help="Filter by contact type.",
     )
     parser.add_argument("--page", type=int, default=1, help="1-based page number.")
@@ -77,7 +82,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        result = asyncio.run(execute(query=args.query, contact_type=args.contact_type, page=args.page))
+        result = asyncio.run(
+            execute(query=args.query, contact_type=args.contact_type, page=args.page)
+        )
     except Exception as exc:
         print(f"list_contacts failed: {exc}", file=sys.stderr)
         return 1

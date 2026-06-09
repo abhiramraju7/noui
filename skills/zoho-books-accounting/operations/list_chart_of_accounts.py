@@ -25,7 +25,9 @@ async def execute(account_type: str = "") -> dict:
     (e.g. income, expense, bank, other_expense)."""
     res = await books_request("chartofaccounts")
     if res["status"] != 200:
-        raise RuntimeError(f"chartofaccounts API returned {res['status']}: {str(res['body'])[:300]}")
+        raise RuntimeError(
+            f"chartofaccounts API returned {res['status']}: {str(res['body'])[:300]}"
+        )
     raw = (res["body"] or {}).get("chartofaccounts") or []
     if account_type:
         needle = account_type.strip().lower()
@@ -44,8 +46,15 @@ async def execute(account_type: str = "") -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="list_chart_of_accounts", description="List Zoho Books accounts.")
-    parser.add_argument("--type", dest="account_type", default="", help="Account type filter, e.g. income/expense/bank.")
+    parser = argparse.ArgumentParser(
+        prog="list_chart_of_accounts", description="List Zoho Books accounts."
+    )
+    parser.add_argument(
+        "--type",
+        dest="account_type",
+        default="",
+        help="Account type filter, e.g. income/expense/bank.",
+    )
     return parser
 
 

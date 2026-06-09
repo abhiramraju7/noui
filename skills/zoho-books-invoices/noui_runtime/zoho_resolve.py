@@ -22,11 +22,20 @@ async def resolve_customer(customer: str) -> dict:
         rows = (res["body"] or {}).get("contacts") or [] if res["status"] == 200 else []
 
     low = needle.lower()
-    exact = [c for c in rows if (c.get("contact_name") or "").lower() == low or (c.get("company_name") or "").lower() == low]
-    partial = [c for c in rows if low in f"{c.get('contact_name','')} {c.get('company_name','')}".lower()]
+    exact = [
+        c
+        for c in rows
+        if (c.get("contact_name") or "").lower() == low
+        or (c.get("company_name") or "").lower() == low
+    ]
+    partial = [
+        c for c in rows if low in f"{c.get('contact_name', '')} {c.get('company_name', '')}".lower()
+    ]
     match = (exact or partial or [None])[0]
     if not match:
-        raise RuntimeError(f"No customer matching {customer!r}. Create it first with the contacts skill.")
+        raise RuntimeError(
+            f"No customer matching {customer!r}. Create it first with the contacts skill."
+        )
     persons = match.get("contact_persons") or []
     return {
         "contact_id": match.get("contact_id"),
@@ -50,7 +59,9 @@ async def resolve_account(account: str) -> dict:
         return {"account_id": needle, "account_name": ""}
     low = needle.lower()
     for a in rows:
-        if (a.get("account_name") or "").lower() == low or str(a.get("account_code") or "") == needle:
+        if (a.get("account_name") or "").lower() == low or str(
+            a.get("account_code") or ""
+        ) == needle:
             return {"account_id": a.get("account_id"), "account_name": a.get("account_name")}
     for a in rows:
         if low in (a.get("account_name") or "").lower():

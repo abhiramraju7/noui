@@ -2,11 +2,10 @@
 """Skill operation: create_invoice
 
 Creates a new invoice for the authenticated FreshBooks account, optionally
-finalizing it (marking it as Sent) in the same call. Runs inside Tabby's
-authenticated browser via CDP. The FreshBooks accounting API authenticates with a
-short-lived in-memory bearer token (not cookies) and serves wildcard CORS, so the
-request uses credentials:'omit' plus a sniffed Authorization header.
-See noui_runtime/freshbooks_auth.py.
+finalizing it (marking it as Sent) in the same call. Runs through Tabby's
+POST /execute/fetch, i.e. fetch() inside the authenticated FreshBooks browser
+session, so the session's own auth is applied by the browser and no token is
+sniffed or passed from Python. See noui_runtime/freshbooks_api.py.
 
 The client is given by name (organization or person) and resolved to a FreshBooks
 customer id, so callers never need to know internal ids. A single line item can be
@@ -28,13 +27,8 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
 from noui_runtime.freshbooks_account import get_account_id  # noqa: E402
-from noui_runtime.freshbooks_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.freshbooks.com"
-PAGE_MATCH = "my.freshbooks.com"
-API_VERSION = "2023-02-20"
+from noui_runtime.freshbooks_api import fb_request  # noqa: E402
 
 
 def _client_label(c: dict) -> str:
@@ -43,36 +37,19 @@ def _client_label(c: dict) -> str:
     return org or person or f"client {c.get('id')}"
 
 
-async def _api(
-    ws_url: str, bearer: str, account_id: str, method: str, path: str, body: dict | None = None
-) -> dict:
-    url = f"{API_BASE}/accounting/account/{account_id}/{path}"
-    init = {
-        "method": method,
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "X-API-VERSION": API_VERSION,
-            "X-Account-ID": account_id,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    }
-    if body is not None:
-        init["body"] = json.dumps(body)
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
+async def _api(account_id: str, method: str, path: str, body: dict | None = None) -> dict:
+    return await fb_request(
+        f"/accounting/account/{account_id}/{path}",
+        method=method,
+        account_id=account_id,
+        body=body,
     )
-    return await cdp_eval(ws_url, js)
 
 
-async def _resolve_client(ws_url: str, bearer: str, account_id: str, client: str) -> dict:
+async def _resolve_client(account_id: str, client: str) -> dict:
     """Resolve a client name/organization to a FreshBooks client record."""
-    res = await _api(ws_url, bearer, account_id, "GET", "users/clients?per_page=100")
-    clients = (((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}).get(
-        "clients", []
-    )
+    data = await _api(account_id, "GET", "users/clients?per_page=100")
+    clients = (((data or {}).get("response") or {}).get("result") or {}).get("clients", [])
     needle = client.strip().lower()
     # exact match on organization or full name first, then substring
     exact = [c for c in clients if _client_label(c).lower() == needle]
@@ -139,20 +116,8 @@ async def execute(
 
     create_date = create_date or _dt.date.today().isoformat()
 
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile freshbooks` and open my.freshbooks.com."
-        )
-
-    bearer = await get_bearer()
-    account_id = await get_account_id(ws_url, bearer)
-    try:
-        client_rec = await _resolve_client(ws_url, bearer, account_id, client)
-    except ValueError:
-        bearer = await get_bearer(force=True)
-        client_rec = await _resolve_client(ws_url, bearer, account_id, client)
+    account_id = await get_account_id()
+    client_rec = await _resolve_client(account_id, client)
 
     body = {
         "invoice": {
@@ -163,33 +128,17 @@ async def execute(
         }
     }
 
-    res = await _api(ws_url, bearer, account_id, "POST", "invoices/invoices", body)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        res = await _api(ws_url, bearer, account_id, "POST", "invoices/invoices", body)
-
-    if res.get("status") not in (200, 201):
-        raise RuntimeError(
-            f"FreshBooks create invoice returned {res.get('status')}: {str(res.get('body'))[:300]}"
-        )
-
-    inv = (((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}).get(
-        "invoice", {}
-    )
+    data = await _api(account_id, "POST", "invoices/invoices", body)
+    inv = (((data or {}).get("response") or {}).get("result") or {}).get("invoice", {})
 
     if send and inv.get("id"):
         mark = await _api(
-            ws_url,
-            bearer,
             account_id,
             "PUT",
             f"invoices/invoices/{inv['id']}",
             {"invoice": {"action_mark_as_sent": True}},
         )
-        if mark.get("status") in (200, 201):
-            inv = (
-                ((json.loads(mark["body"]) or {}).get("response") or {}).get("result") or {}
-            ).get("invoice", inv)
+        inv = (((mark or {}).get("response") or {}).get("result") or {}).get("invoice", inv)
 
     amount = inv.get("amount") or {}
     return {

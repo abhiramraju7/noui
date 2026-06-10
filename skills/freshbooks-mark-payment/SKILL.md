@@ -11,12 +11,11 @@ account, marking it paid (or partially paid). The single operation under
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated FreshBooks browser session** via CDP.
-The FreshBooks accounting API (`api.freshbooks.com`) authenticates with a short-lived
-in-memory **bearer token** (not cookies) and serves wildcard CORS, so the operation
-sniffs the live bearer off a real request via CDP `Network` events and replays the call
-with `credentials:'omit'`. The token is cached on disk until shortly before its JWT
-`exp`. See `noui_runtime/freshbooks_auth.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated FreshBooks browser session** (see
+`noui_runtime/execute.py` and `noui_runtime/freshbooks_api.py`). The session's
+own auth — the SPA's in-page bearer injection on `api.freshbooks.com` — is
+applied by the browser, so no token is sniffed or passed from Python.
 
 The invoice is given by **number** (e.g. `0000001`) or numeric id and resolved
 automatically. The payment amount defaults to the invoice's **full outstanding
@@ -30,7 +29,7 @@ balance**, so a single call settles the invoice. The account id is resolved at r
    .venv/bin/python cli/main.py tabby session ensure --profile freshbooks
    ```
    FreshBooks enforces an email code on every new device, so the first login per
-   session is human-in-the-loop via `chrome://inspect` (`localhost:9222`).
+   session is human-in-the-loop in the Tabby browser session.
 2. The Tabby session must have a page open on `my.freshbooks.com` at call time.
 3. The invoice must be finalized (Sent) and have an outstanding balance.
 
@@ -82,4 +81,4 @@ balance**, so a single call settles the invoice. The account id is resolved at r
   with a reduced outstanding balance.
 - Payments feed cash-basis reports and reduce the client's balance in the
   Accounts Receivable aging report (`freshbooks-reports` skill).
-- If a call returns 401/403, the operation re-sniffs a fresh bearer once and retries.
+- Auth is handled by the Tabby browser session; on a persistent 401/403, refresh it with `tabby session ensure --profile freshbooks`.

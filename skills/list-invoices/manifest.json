@@ -15,14 +15,14 @@
     "requires_auth": true,
     "profile_slug": "freshbooks",
     "profile_db_id": "b1cdbf72-3f5a-4488-a507-a3cb422dc257",
-    "strategy": "tabby_credentials",
-    "execution_strategy": "cdp_browser_session",
+    "strategy": "tabby_execute",
     "auth_plan_file": "auth_plan.json"
   },
   "runtime": {
     "type": "claude-code-skill",
     "entrypoint": "SKILL.md",
     "operation_style": "subprocess-cli",
+    "transport": "execute",
     "python": ">=3.11",
     "python_executable": ".venv/bin/python"
   },

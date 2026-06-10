@@ -5,7 +5,6 @@ description = "NoUI-generated skill for listing and recording FreshBooks expense
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
-    "websockets>=12",
 ]
 
 [tool.uv]

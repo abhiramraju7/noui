@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Skill operation: list_invoices
 
-Lists invoices for the authenticated FreshBooks account. Runs inside Tabby's
-authenticated browser via CDP. The FreshBooks accounting API authenticates with a
-short-lived in-memory bearer token (not cookies) and serves wildcard CORS, so the
-request uses credentials:'omit' plus a sniffed Authorization header.
-See noui_runtime/freshbooks_auth.py.
+Lists invoices for the authenticated FreshBooks account. Runs through Tabby's
+POST /execute/fetch, i.e. fetch() inside the authenticated FreshBooks browser
+session, so the session's own auth is applied by the browser and no token is
+sniffed or passed from Python. See noui_runtime/freshbooks_api.py.
 
 Prints JSON on stdout.
 """
@@ -24,57 +23,20 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
 from noui_runtime.freshbooks_account import get_account_id  # noqa: E402
-from noui_runtime.freshbooks_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.freshbooks.com"
-PAGE_MATCH = "my.freshbooks.com"
-API_VERSION = "2023-02-20"
+from noui_runtime.freshbooks_api import fb_request  # noqa: E402
 
 
-async def _fetch(ws_url: str, bearer: str, account_id: str, page: int, per_page: int) -> dict:
+async def _fetch(account_id: str, page: int, per_page: int) -> dict:
     query = urllib.parse.urlencode({"page": page, "per_page": per_page})
-    url = f"{API_BASE}/accounting/account/{account_id}/invoices/invoices?{query}"
-    init = {
-        "method": "GET",
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "X-API-VERSION": API_VERSION,
-            "X-Account-ID": account_id,
-            "Accept": "application/json",
-        },
-    }
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    return await cdp_eval(ws_url, js)
+    path = f"/accounting/account/{account_id}/invoices/invoices?{query}"
+    return await fb_request(path, account_id=account_id)
 
 
 async def execute(status: str = "", page: int = 1, per_page: int = 15) -> dict:
     """List invoices for the authenticated FreshBooks account."""
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile freshbooks` and open my.freshbooks.com."
-        )
-
-    bearer = await get_bearer()
-    account_id = await get_account_id(ws_url, bearer)
-    res = await _fetch(ws_url, bearer, account_id, page, per_page)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        res = await _fetch(ws_url, bearer, account_id, page, per_page)
-
-    if res.get("status") != 200:
-        raise RuntimeError(
-            f"FreshBooks invoices API returned {res.get('status')}: {str(res.get('body'))[:300]}"
-        )
-
-    data = json.loads(res["body"])
+    account_id = await get_account_id()
+    data = await _fetch(account_id, page, per_page)
     result = ((data or {}).get("response") or {}).get("result") or {}
     raw = result.get("invoices", [])
 

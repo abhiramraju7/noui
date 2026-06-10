@@ -3,8 +3,9 @@
 
 Records a new expense in the authenticated FreshBooks account. The category is given
 by name and resolved to a FreshBooks category id; the staff id (expense owner) is
-resolved automatically to the account owner. Runs inside Tabby's authenticated browser
-via CDP using a sniffed in-memory bearer token. See noui_runtime/freshbooks_auth.py.
+resolved automatically to the account owner. Runs through Tabby's POST /execute/fetch,
+i.e. fetch() inside the authenticated FreshBooks browser session.
+See noui_runtime/freshbooks_api.py.
 
 Prints JSON on stdout.
 """
@@ -22,46 +23,22 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
 from noui_runtime.freshbooks_account import get_account_id  # noqa: E402
-from noui_runtime.freshbooks_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.freshbooks.com"
-PAGE_MATCH = "my.freshbooks.com"
-API_VERSION = "2023-02-20"
+from noui_runtime.freshbooks_api import fb_request  # noqa: E402
 
 
-async def _api(
-    ws_url: str, bearer: str, account_id: str, method: str, path: str, body: dict | None = None
-) -> dict:
-    url = f"{API_BASE}/accounting/account/{account_id}/{path}"
-    init = {
-        "method": method,
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "X-API-VERSION": API_VERSION,
-            "X-Account-ID": account_id,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    }
-    if body is not None:
-        init["body"] = json.dumps(body)
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
+async def _api(account_id: str, method: str, path: str, body: dict | None = None) -> dict:
+    return await fb_request(
+        f"/accounting/account/{account_id}/{path}",
+        method=method,
+        account_id=account_id,
+        body=body,
     )
-    return await cdp_eval(ws_url, js)
 
 
-async def _resolve_category(
-    ws_url: str, bearer: str, account_id: str, category: str
-) -> tuple[int, str]:
-    res = await _api(ws_url, bearer, account_id, "GET", "expenses/categories?per_page=200")
-    cats = (((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}).get(
-        "categories", []
-    )
+async def _resolve_category(account_id: str, category: str) -> tuple[int, str]:
+    data = await _api(account_id, "GET", "expenses/categories?per_page=200")
+    cats = (((data or {}).get("response") or {}).get("result") or {}).get("categories", [])
     needle = category.strip().lower()
     exact = [c for c in cats if (c.get("category") or "").strip().lower() == needle]
     matches = exact or [c for c in cats if needle in (c.get("category") or "").lower()]
@@ -75,9 +52,9 @@ async def _resolve_category(
     return chosen.get("categoryid"), chosen.get("category")
 
 
-async def _resolve_staff_id(ws_url: str, bearer: str, account_id: str) -> int:
-    res = await _api(ws_url, bearer, account_id, "GET", "users/staffs?per_page=10")
-    result = ((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}
+async def _resolve_staff_id(account_id: str) -> int:
+    data = await _api(account_id, "GET", "users/staffs?per_page=10")
+    result = ((data or {}).get("response") or {}).get("result") or {}
     staff = result.get("staff") or result.get("staffs") or []
     if not staff:
         raise RuntimeError("No staff found for this account; cannot set expense owner.")
@@ -109,24 +86,9 @@ async def execute(
         raise ValueError("--amount is required.")
     date = date or _dt.date.today().isoformat()
 
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile freshbooks` and open my.freshbooks.com."
-        )
-
-    bearer = await get_bearer()
-    account_id = await get_account_id(ws_url, bearer)
-    try:
-        category_id, category_name = await _resolve_category(ws_url, bearer, account_id, category)
-        staff_id = await _resolve_staff_id(ws_url, bearer, account_id)
-    except ValueError:
-        raise
-    except Exception:
-        bearer = await get_bearer(force=True)
-        category_id, category_name = await _resolve_category(ws_url, bearer, account_id, category)
-        staff_id = await _resolve_staff_id(ws_url, bearer, account_id)
+    account_id = await get_account_id()
+    category_id, category_name = await _resolve_category(account_id, category)
+    staff_id = await _resolve_staff_id(account_id)
 
     body = {
         "expense": {
@@ -139,19 +101,8 @@ async def execute(
         }
     }
 
-    res = await _api(ws_url, bearer, account_id, "POST", "expenses/expenses", body)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        res = await _api(ws_url, bearer, account_id, "POST", "expenses/expenses", body)
-
-    if res.get("status") not in (200, 201):
-        raise RuntimeError(
-            f"FreshBooks create expense returned {res.get('status')}: {str(res.get('body'))[:300]}"
-        )
-
-    e = (((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}).get(
-        "expense", {}
-    )
+    data = await _api(account_id, "POST", "expenses/expenses", body)
+    e = (((data or {}).get("response") or {}).get("result") or {}).get("expense", {})
     amt = e.get("amount") or {}
     return {
         "id": e.get("id"),

@@ -1,4 +1,4 @@
-"""FreshBooks account / business resolver.
+"""FreshBooks account / business resolver (Tabby-routed).
 
 Every FreshBooks accounting API path is scoped either to an account id (e.g.
 `o8QvP0`, used by invoices/expenses/clients/most reports) or to a business UUID
@@ -8,7 +8,8 @@ module resolves them once at runtime and caches them on disk. Resolution order:
   1. `FRESHBOOKS_ACCOUNT_ID` / `FRESHBOOKS_BUSINESS_UUID` env vars (explicit override).
   2. Disk cache (`/tmp/noui_freshbooks_account.json`).
   3. The authenticated user's first business via `/auth/api/v1/users/me`,
-     executed inside Tabby's browser (so it uses the live bearer + session).
+     fetched through Tabby's `POST /execute/fetch` (so it runs inside the live
+     authenticated browser session).
 
 This lets the whole FreshBooks skill suite work against any logged-in account
 without code changes.
@@ -20,12 +21,16 @@ import json
 import os
 from pathlib import Path
 
-from .cdp import cdp_eval
+from .execute import execute_fetch
 
 ME_URL = "https://api.freshbooks.com/auth/api/v1/users/me"
 CACHE_PATH = Path("/tmp/noui_freshbooks_account.json")
 ENV_ACCOUNT = "FRESHBOOKS_ACCOUNT_ID"
 ENV_BUSINESS = "FRESHBOOKS_BUSINESS_UUID"
+
+
+def _profile_id() -> str:
+    return os.environ.get("PROFILE_SLUG") or "freshbooks"
 
 
 def _first_business(payload: dict) -> dict:
@@ -58,24 +63,10 @@ def _write_cache(data: dict) -> None:
         pass
 
 
-async def _resolve(ws_url: str, bearer: str) -> dict:
+async def _resolve() -> dict:
     """Fetch /users/me inside the browser and return {account_id, business_uuid}."""
-    init = {
-        "method": "GET",
-        "credentials": "omit",
-        "headers": {"Authorization": bearer, "Accept": "application/json"},
-    }
-    js = (
-        f"fetch({json.dumps(ME_URL)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    res = await cdp_eval(ws_url, js)
-    if res.get("status") != 200:
-        raise RuntimeError(
-            f"Could not resolve FreshBooks account (/users/me -> {res.get('status')}). "
-            f"Set {ENV_ACCOUNT}/{ENV_BUSINESS} to override."
-        )
-    business = _first_business(json.loads(res["body"]))
+    payload = await execute_fetch(_profile_id(), ME_URL, headers={"Accept": "application/json"})
+    business = _first_business(payload if isinstance(payload, dict) else {})
     resolved = {
         "account_id": business.get("account_id"),
         "business_uuid": business.get("business_uuid"),
@@ -84,7 +75,7 @@ async def _resolve(ws_url: str, bearer: str) -> dict:
     return resolved
 
 
-async def get_account_id(ws_url: str, bearer: str, force: bool = False) -> str:
+async def get_account_id(force: bool = False) -> str:
     """Resolve the FreshBooks account id (e.g. "o8QvP0"), caching it on disk."""
     if not force:
         env_val = os.environ.get(ENV_ACCOUNT)
@@ -93,7 +84,7 @@ async def get_account_id(ws_url: str, bearer: str, force: bool = False) -> str:
         cached = _read_cache().get("account_id")
         if cached:
             return cached
-    account_id = (await _resolve(ws_url, bearer)).get("account_id")
+    account_id = (await _resolve()).get("account_id")
     if not account_id:
         raise RuntimeError(
             f"No account id on this FreshBooks login. Set {ENV_ACCOUNT} to override."
@@ -101,7 +92,7 @@ async def get_account_id(ws_url: str, bearer: str, force: bool = False) -> str:
     return account_id
 
 
-async def get_business_uuid(ws_url: str, bearer: str, force: bool = False) -> str:
+async def get_business_uuid(force: bool = False) -> str:
     """Resolve the FreshBooks business UUID (used by the P&L report), caching it."""
     if not force:
         env_val = os.environ.get(ENV_BUSINESS)
@@ -110,7 +101,7 @@ async def get_business_uuid(ws_url: str, bearer: str, force: bool = False) -> st
         cached = _read_cache().get("business_uuid")
         if cached:
             return cached
-    business_uuid = (await _resolve(ws_url, bearer)).get("business_uuid")
+    business_uuid = (await _resolve()).get("business_uuid")
     if not business_uuid:
         raise RuntimeError(
             f"No business uuid on this FreshBooks login. Set {ENV_BUSINESS} to override."

@@ -2,10 +2,9 @@
 """Skill operation: get_sales_tax_summary
 
 Fetches the FreshBooks Sales Tax Summary report for the authenticated business.
-Runs inside Tabby's authenticated browser via CDP. The FreshBooks accounting API
-authenticates with a short-lived in-memory bearer token (not cookies) and serves
-wildcard CORS, so the request uses credentials:'omit' plus a sniffed Authorization
-header. See noui_runtime/freshbooks_auth.py.
+Runs through Tabby's POST /execute/fetch, i.e. fetch() inside the authenticated
+FreshBooks browser session, so the session's own auth is applied by the browser
+and no token is sniffed or passed from Python. See noui_runtime/freshbooks_api.py.
 
 Prints JSON on stdout.
 """
@@ -23,13 +22,8 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
 from noui_runtime.freshbooks_account import get_account_id  # noqa: E402
-from noui_runtime.freshbooks_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.freshbooks.com"
-PAGE_MATCH = "my.freshbooks.com"
-API_VERSION = "2023-02-20"
+from noui_runtime.freshbooks_api import fb_request  # noqa: E402
 
 
 def _money(node: dict | None) -> dict:
@@ -51,8 +45,6 @@ def _tax_line(row: dict) -> dict:
 
 
 async def _fetch(
-    ws_url: str,
-    bearer: str,
     account_id: str,
     start_date: str,
     end_date: str,
@@ -68,22 +60,8 @@ async def _fetch(
             "cash_based": "true" if cash_based else "false",
         }
     )
-    url = f"{API_BASE}/accounting/account/{account_id}/reports/accounting/taxsummary?{query}"
-    init = {
-        "method": "GET",
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "X-API-VERSION": API_VERSION,
-            "X-Account-ID": account_id,
-            "Accept": "application/json",
-        },
-    }
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    return await cdp_eval(ws_url, js)
+    path = f"/accounting/account/{account_id}/reports/accounting/taxsummary?{query}"
+    return await fb_request(path, account_id=account_id)
 
 
 async def execute(
@@ -108,31 +86,9 @@ async def execute(
     if not start_date or not end_date:
         raise ValueError("start_date and end_date are required (YYYY-MM-DD).")
 
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile freshbooks` and open my.freshbooks.com."
-        )
-
-    bearer = await get_bearer()
-    account_id = await get_account_id(ws_url, bearer)
-    res = await _fetch(ws_url, bearer, account_id, start_date, end_date, currency_code, cash_based)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        res = await _fetch(
-            ws_url, bearer, account_id, start_date, end_date, currency_code, cash_based
-        )
-
-    if res.get("status") != 200:
-        raise RuntimeError(
-            f"FreshBooks Sales Tax Summary returned {res.get('status')}: "
-            f"{str(res.get('body'))[:300]}"
-        )
-
-    ts = (((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}).get(
-        "taxsummary", {}
-    )
+    account_id = await get_account_id()
+    data = await _fetch(account_id, start_date, end_date, currency_code, cash_based)
+    ts = (((data or {}).get("response") or {}).get("result") or {}).get("taxsummary", {})
 
     taxes = [_tax_line(r) for r in (ts.get("taxes") or [])]
     total_collected = sum(

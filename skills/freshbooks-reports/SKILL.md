@@ -10,12 +10,11 @@ FreshBooks accounting reports for the authenticated business. Each operation und
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated FreshBooks browser session** via CDP.
-The FreshBooks accounting API (`api.freshbooks.com`) authenticates with a short-lived
-in-memory **bearer token** (not cookies) and serves wildcard CORS, so each operation
-sniffs the live bearer off a real request via CDP `Network` events and replays the call
-with `credentials:'omit'`. The token is cached on disk until shortly before its JWT
-`exp`. See `noui_runtime/freshbooks_auth.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated FreshBooks browser session** (see
+`noui_runtime/execute.py` and `noui_runtime/freshbooks_api.py`). The session's
+own auth — the SPA's in-page bearer injection on `api.freshbooks.com` — is
+applied by the browser, so no token is sniffed or passed from Python.
 
 ## Prerequisites
 
@@ -24,7 +23,7 @@ with `credentials:'omit'`. The token is cached on disk until shortly before its 
    .venv/bin/python cli/main.py tabby session ensure --profile freshbooks
    ```
    FreshBooks enforces an email code on every new device, so the first login per
-   session is human-in-the-loop via `chrome://inspect` (`localhost:9222`).
+   session is human-in-the-loop in the Tabby browser session.
 2. The Tabby session must have a page open on `my.freshbooks.com` at call time.
 
 ## Operations
@@ -152,4 +151,4 @@ with `credentials:'omit'`. The token is cached on disk until shortly before its 
 - A/R aging reflects **outstanding** invoice balances, so recording payments
   (`freshbooks-mark-payment` skill) reduces the relevant client's bucket.
 - On a trial/empty account the figures are `0.00`; against a real account they reflect actual ledger data.
-- If a call returns 401/403, the operation re-sniffs a fresh bearer once and retries.
+- Auth is handled by the Tabby browser session; on a persistent 401/403, refresh it with `tabby session ensure --profile freshbooks`.

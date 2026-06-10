@@ -2,8 +2,8 @@
 """Skill operation: list_clients
 
 Lists clients for the authenticated FreshBooks account, with an optional
-name/organization filter. Runs inside Tabby's authenticated browser via CDP using a
-sniffed in-memory bearer token. See noui_runtime/freshbooks_auth.py.
+name/organization filter. Runs through Tabby's POST /execute/fetch, i.e. fetch()
+inside the authenticated FreshBooks browser session. See noui_runtime/freshbooks_api.py.
 
 Prints JSON on stdout.
 """
@@ -21,13 +21,8 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
 from noui_runtime.freshbooks_account import get_account_id  # noqa: E402
-from noui_runtime.freshbooks_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.freshbooks.com"
-PAGE_MATCH = "my.freshbooks.com"
-API_VERSION = "2023-02-20"
+from noui_runtime.freshbooks_api import fb_request  # noqa: E402
 
 
 def _label(c: dict) -> str:
@@ -36,24 +31,10 @@ def _label(c: dict) -> str:
     return org or person or f"client {c.get('id')}"
 
 
-async def _fetch(ws_url: str, bearer: str, account_id: str, page: int, per_page: int) -> dict:
+async def _fetch(account_id: str, page: int, per_page: int) -> dict:
     query = urllib.parse.urlencode({"page": page, "per_page": per_page})
-    url = f"{API_BASE}/accounting/account/{account_id}/users/clients?{query}"
-    init = {
-        "method": "GET",
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "X-API-VERSION": API_VERSION,
-            "X-Account-ID": account_id,
-            "Accept": "application/json",
-        },
-    }
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    return await cdp_eval(ws_url, js)
+    path = f"/accounting/account/{account_id}/users/clients?{query}"
+    return await fb_request(path, account_id=account_id)
 
 
 async def execute(query: str = "", page: int = 1, per_page: int = 50) -> dict:
@@ -68,26 +49,9 @@ async def execute(query: str = "", page: int = 1, per_page: int = 50) -> dict:
         {count, page, per_page, total, clients: [{id, organization, name, email,
          currency, country, city}]}
     """
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile freshbooks` and open my.freshbooks.com."
-        )
-
-    bearer = await get_bearer()
-    account_id = await get_account_id(ws_url, bearer)
-    res = await _fetch(ws_url, bearer, account_id, page, per_page)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        res = await _fetch(ws_url, bearer, account_id, page, per_page)
-
-    if res.get("status") != 200:
-        raise RuntimeError(
-            f"FreshBooks clients API returned {res.get('status')}: {str(res.get('body'))[:300]}"
-        )
-
-    result = ((json.loads(res["body"]) or {}).get("response") or {}).get("result") or {}
+    account_id = await get_account_id()
+    data = await _fetch(account_id, page, per_page)
+    result = ((data or {}).get("response") or {}).get("result") or {}
     raw = result.get("clients", [])
 
     needle = query.strip().lower()

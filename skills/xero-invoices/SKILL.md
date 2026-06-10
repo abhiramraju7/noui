@@ -14,10 +14,11 @@ returns 403 outside the UI context).
 
 ## How it works
 
-Execution runs inside Tabby's authenticated Xero browser via CDP. The module
-`noui_runtime/xero_invoicing.py` navigates to the invoicing list page and sniffs
-the full request header bundle from a live `customer/find` call, then replays
-other invoicing BFF paths with those headers.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Xero browser session** (see `noui_runtime/execute.py`
+and `noui_runtime/xero_invoicing.py`). The session's own auth is applied by the
+browser, so no bearer token or header bundle is sniffed from Python. Tenant routing
+headers come from `noui_runtime/xero_account.py`.
 
 ## Prerequisites
 

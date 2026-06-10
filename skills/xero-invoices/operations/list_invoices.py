@@ -3,7 +3,7 @@
 
 Lists invoices from the Xero Sales/Invoicing UI using the same BFF endpoint the
 page calls: ``GET go.xero.com/api/invoicing/invoice/find``. Runs inside Tabby's
-authenticated browser via CDP with sniffed Sales/Invoicing headers.
+authenticated browser through Tabby's POST /execute/fetch. See noui_runtime/xero_invoicing.py.
 See noui_runtime/xero_invoicing.py.
 
 Prints JSON on stdout.
@@ -37,19 +37,19 @@ async def execute(status: str = "ALL", page: int = 1) -> dict:
     Returns:
         {count, page, status, invoices: [{id, number, contact, status, total, currency, date}]}
     """
-    ws_url, headers = await get_invoicing_headers()
+    headers = await get_invoicing_headers()
     path = f"invoice/find?page={page}&status={status}"
-    res = await invoicing_fetch(ws_url, headers, path)
+    res = await invoicing_fetch(path, headers=headers)
     if res.get("status") in (401, 403):
-        ws_url, headers = await get_invoicing_headers(force=True)
-        res = await invoicing_fetch(ws_url, headers, path)
+        headers = await get_invoicing_headers(force=True)
+        res = await invoicing_fetch(path, headers=headers)
 
     body = res.get("body", "")
 
     # On some orgs invoice/find returns 404 "object is NULL" even when drafts exist.
     # Fall back to the invoice/latest/status endpoints the create form uses.
     if res.get("status") == 404 and "NULL" in body:
-        return await _list_via_latest(ws_url, headers, status)
+        return await _list_via_latest(headers, status)
     if res.get("status") != 200:
         raise RuntimeError(f"Xero invoice/find returned {res.get('status')}: {str(body)[:300]}")
 
@@ -79,7 +79,7 @@ async def execute(status: str = "ALL", page: int = 1) -> dict:
 _LATEST_STATUSES = ("DRAFT", "SUBMITTED")
 
 
-async def _list_via_latest(ws_url, headers, status: str) -> dict:
+async def _list_via_latest(headers, status: str) -> dict:
     """Fallback: surface the latest invoice id per status via invoice/latest.
 
     The new invoicing SPA exposes only ``invoice/latest`` (most recent overall)
@@ -92,7 +92,7 @@ async def _list_via_latest(ws_url, headers, status: str) -> dict:
     for st in statuses:
         if st not in _LATEST_STATUSES:
             continue
-        res = await invoicing_fetch(ws_url, headers, f"invoice/latest/status/{st}")
+        res = await invoicing_fetch(f"invoice/latest/status/{st}")
         if res.get("status") != 200:
             continue
         inv_id = (res.get("body") or "").strip().strip('"')

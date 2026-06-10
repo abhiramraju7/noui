@@ -10,16 +10,11 @@ under `operations/` is a standalone CLI script that prints a JSON response to st
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Xero browser session** via CDP.
-The Xero web app (`go.xero.com`) authenticates with a short-lived in-memory
-**bearer token** (not cookies) and calls `api.xero.com` with extra headers
-(`xero-tenant-id`, `xero-tenant-shortcode`, `xero-shell-app-name`), so each
-operation sniffs the live bearer via CDP `Network` events and replays the call
-with `credentials:'omit'`. The token is cached on disk until shortly before its JWT
-`exp`. See `noui_runtime/xero_auth.py`.
-
-The org tenant id and shortcode are resolved at runtime from the browser URL and
-shell API (see `noui_runtime/xero_account.py`).
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Xero browser session** (see `noui_runtime/execute.py`
+and `noui_runtime/xero_api.py`). The session's own auth is applied by the browser,
+so no bearer token is sniffed or passed from Python. Tenant routing headers are
+resolved via `noui_runtime/xero_account.py` (Organisation API or env overrides).
 
 ## Prerequisites
 
@@ -27,8 +22,7 @@ shell API (see `noui_runtime/xero_account.py`).
    ```bash
    .venv/bin/python cli/main.py tabby session ensure --profile xero --open https://go.xero.com
    ```
-   Xero may require human-in-the-loop login on new devices via `chrome://inspect`
-   (`localhost:9222`).
+   Xero may require human-in-the-loop login on new devices in the Tabby browser session.
 2. The Tabby session must have a page open on `go.xero.com/app/<shortcode>/...` at call time.
 
 ## Operations
@@ -87,4 +81,4 @@ shell API (see `noui_runtime/xero_account.py`).
   the separate `xero-invoices` skill (`go.xero.com/api/invoicing/*` BFF).
 - **Expenses and Reports** are not available on this org's plan (Expenses page is upsell).
 - Override tenant resolution with `XERO_TENANT_ID` and `XERO_TENANT_SHORTCODE` if needed.
-- If a call returns 401/403, the operation re-sniffs a fresh bearer once and retries.
+- Auth is handled by the Tabby browser session; on a persistent 401/403, refresh it with `tabby session ensure --profile xero`.

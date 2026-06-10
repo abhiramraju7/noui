@@ -24,11 +24,11 @@ from noui_runtime.xero_invoicing import get_invoicing_headers, invoicing_fetch  
 
 async def execute() -> dict:
     """List tax rates available when creating invoices."""
-    ws_url, headers = await get_invoicing_headers()
-    res = await invoicing_fetch(ws_url, headers, "taxRateAce")
+    headers = await get_invoicing_headers()
+    res = await invoicing_fetch("taxRateAce", headers=headers)
     if res.get("status") in (401, 403):
-        ws_url, headers = await get_invoicing_headers(force=True)
-        res = await invoicing_fetch(ws_url, headers, "taxRateAce")
+        headers = await get_invoicing_headers(force=True)
+        res = await invoicing_fetch("taxRateAce", headers=headers)
 
     if res.get("status") != 200:
         raise RuntimeError(

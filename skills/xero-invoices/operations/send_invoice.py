@@ -36,9 +36,9 @@ def _fill_placeholders(text: str, kv: dict) -> str:
     return text
 
 
-async def _email_defaults(ws_url: str, headers: dict, invoice_id: str) -> dict:
+async def _email_defaults(headers: dict, invoice_id: str) -> dict:
     """Resolve default subject/body/template/recipient for an invoice email."""
-    res = await invoicing_fetch(ws_url, headers, f"invoice/{invoice_id}/emailsettings")
+    res = await invoicing_fetch(f"invoice/{invoice_id}/emailsettings")
     if res.get("status") != 200 or not res.get("body"):
         return {}
     settings = json.loads(res["body"])
@@ -59,8 +59,8 @@ async def _email_defaults(ws_url: str, headers: dict, invoice_id: str) -> dict:
     }
 
 
-async def _recipient(ws_url: str, headers: dict, invoice_id: str) -> dict:
-    res = await invoicing_fetch(ws_url, headers, f"invoice/find/{invoice_id}")
+async def _recipient(headers: dict, invoice_id: str) -> dict:
+    res = await invoicing_fetch(f"invoice/find/{invoice_id}")
     if res.get("status") != 200 or not res.get("body"):
         return {}
     inv = json.loads(res["body"])
@@ -89,10 +89,10 @@ async def execute(
     Returns:
         {invoice_id, sent, to, subject}
     """
-    ws_url, headers = await get_invoicing_headers()
+    headers = await get_invoicing_headers()
 
-    defaults = await _email_defaults(ws_url, headers, invoice_id)
-    recipient = await _recipient(ws_url, headers, invoice_id)
+    defaults = await _email_defaults(headers, invoice_id)
+    recipient = await _recipient(headers, invoice_id)
 
     to_addr = to or recipient.get("address")
     if not to_addr:
@@ -116,10 +116,10 @@ async def execute(
     }
 
     path = f"invoice/email?invoiceId={invoice_id}"
-    res = await invoicing_fetch(ws_url, headers, path, method="POST", body=body)
+    res = await invoicing_fetch(path, method="POST", body=body, headers=headers)
     if res.get("status") in (401, 403):
-        ws_url, headers = await get_invoicing_headers(force=True)
-        res = await invoicing_fetch(ws_url, headers, path, method="POST", body=body)
+        headers = await get_invoicing_headers(force=True)
+        res = await invoicing_fetch(path, method="POST", body=body, headers=headers)
 
     if res.get("status") not in (200, 201, 204):
         raise RuntimeError(

@@ -3,7 +3,7 @@
 
 Lists customers from the Xero Sales/Invoicing UI using the same BFF endpoint the
 page calls: ``GET go.xero.com/api/invoicing/customer/find``. Runs inside Tabby's
-authenticated browser via CDP with sniffed Sales/Invoicing headers.
+authenticated browser through Tabby's POST /execute/fetch. See noui_runtime/xero_invoicing.py.
 
 Prints JSON on stdout.
 """
@@ -34,12 +34,12 @@ async def execute(query: str = "", page: int = 1) -> dict:
     Returns:
         {count, page, customers: [{id, name, email}]}
     """
-    ws_url, headers = await get_invoicing_headers()
+    headers = await get_invoicing_headers()
     q = urllib.parse.urlencode({"page": page, "q": query})
-    res = await invoicing_fetch(ws_url, headers, f"customer/find?{q}")
+    res = await invoicing_fetch(f"customer/find?{q}", headers=headers)
     if res.get("status") in (401, 403):
-        ws_url, headers = await get_invoicing_headers(force=True)
-        res = await invoicing_fetch(ws_url, headers, f"customer/find?{q}")
+        headers = await get_invoicing_headers(force=True)
+        res = await invoicing_fetch(f"customer/find?{q}", headers=headers)
 
     if res.get("status") != 200:
         raise RuntimeError(

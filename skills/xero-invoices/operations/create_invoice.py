@@ -120,16 +120,16 @@ def _customer_for_create(c: dict) -> dict:
     }
 
 
-async def _find_customer(ws_url: str, headers: dict, name: str) -> tuple[dict, str, dict]:
+async def _find_customer(headers: dict, name: str) -> tuple[dict, dict]:
     needle = name.strip().lower()
-    ctx = {"ws_url": ws_url, "headers": headers}
+    ctx = {"headers": headers}
 
     async def _fetch(q: str) -> list:
         params = urllib.parse.urlencode({"page": 1, "q": q})
-        res = await invoicing_fetch(ctx["ws_url"], ctx["headers"], f"customer/find?{params}")
+        res = await invoicing_fetch(f"customer/find?{params}", headers=ctx["headers"])
         if res.get("status") in (401, 403):
-            ctx["ws_url"], ctx["headers"] = await get_invoicing_headers(force=True)
-            res = await invoicing_fetch(ctx["ws_url"], ctx["headers"], f"customer/find?{params}")
+            ctx["headers"] = await get_invoicing_headers(force=True)
+            res = await invoicing_fetch(f"customer/find?{params}", headers=ctx["headers"])
         if res.get("status") != 200:
             raise RuntimeError(
                 f"customer/find returned {res.get('status')}: {str(res.get('body'))[:300]}"
@@ -143,11 +143,11 @@ async def _find_customer(ws_url: str, headers: dict, name: str) -> tuple[dict, s
     matches = exact or [c for c in customers if needle in _customer_label(c).lower()]
     if not matches:
         raise RuntimeError(f"No customer matching {name!r}. Use list_invoice_customers first.")
-    return _customer_for_create(matches[0]), ctx["ws_url"], ctx["headers"]
+    return _customer_for_create(matches[0]), ctx["headers"]
 
 
-async def _branding_theme(ws_url: str, headers: dict) -> str:
-    res = await invoicing_fetch(ws_url, headers, "branding/find")
+async def _branding_theme(headers: dict) -> str:
+    res = await invoicing_fetch("branding/find", headers=headers)
     if res.get("status") == 200 and res.get("body"):
         themes = json.loads(res["body"])
         if themes:
@@ -182,9 +182,9 @@ async def execute(
     Returns:
         {id, number, status, customer, total, currency}
     """
-    ws_url, headers = await get_invoicing_headers()
-    cust, ws_url, headers = await _find_customer(ws_url, headers, customer)
-    theme = await _branding_theme(ws_url, headers)
+    headers = await get_invoicing_headers()
+    cust, headers = await _find_customer(headers, customer)
+    theme = await _branding_theme(headers)
 
     inv_date = date.fromisoformat(invoice_date) if invoice_date else date.today()
     due = date.fromisoformat(due_date) if due_date else inv_date + timedelta(days=7)
@@ -211,10 +211,10 @@ async def execute(
         "taxType": "EXCLUSIVE",
     }
 
-    res = await invoicing_fetch(ws_url, headers, "invoice/create", method="POST", body=body)
+    res = await invoicing_fetch("invoice/create", method="POST", body=body, headers=headers)
     if res.get("status") in (401, 403):
-        ws_url, headers = await get_invoicing_headers(force=True)
-        res = await invoicing_fetch(ws_url, headers, "invoice/create", method="POST", body=body)
+        headers = await get_invoicing_headers(force=True)
+        res = await invoicing_fetch("invoice/create", method="POST", body=body, headers=headers)
 
     if res.get("status") not in (200, 201):
         raise RuntimeError(
@@ -232,14 +232,14 @@ async def execute(
     if not invoice_id:
         # AUTHORISED is rejected by latest/status; use invoice/latest (most recent).
         if approve:
-            latest_res = await invoicing_fetch(ws_url, headers, "invoice/latest")
+            latest_res = await invoicing_fetch("invoice/latest")
             if latest_res.get("status") == 200 and latest_res.get("body"):
                 arr = json.loads(latest_res["body"])
                 if isinstance(arr, list) and arr:
                     invoice_id = arr[0].get("Id")
                     number = number or arr[0].get("Number")
         else:
-            latest_res = await invoicing_fetch(ws_url, headers, "invoice/latest/status/DRAFT")
+            latest_res = await invoicing_fetch("invoice/latest/status/DRAFT")
             if latest_res.get("status") == 200 and latest_res.get("body"):
                 ltxt = latest_res["body"].strip().strip('"')
                 if ltxt and ltxt != "null":

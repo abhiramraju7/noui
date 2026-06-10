@@ -14,13 +14,13 @@
     "requires_auth": true,
     "profile_slug": "xero",
     "profile_db_id": "227df98f-55b3-4b64-84e7-db18fa294f7c",
-    "strategy": "tabby_credentials",
-    "execution_strategy": "cdp_browser_session"
+    "strategy": "tabby_execute"
   },
   "runtime": {
     "type": "claude-code-skill",
     "entrypoint": "SKILL.md",
     "operation_style": "subprocess-cli",
+    "transport": "execute",
     "python": ">=3.11",
     "python_executable": ".venv/bin/python"
   },

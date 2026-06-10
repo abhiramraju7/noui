@@ -2,9 +2,8 @@
 """Skill operation: mark_payment
 
 Records a payment against an invoice via the Xero accounting API:
-``PUT api.xero.com/api.xro/2.0/payments`` — captured from a live mark-payment
-workflow recording. The deposit account is resolved from the invoicing
-``account/payable`` BFF list by name or code.
+``PUT api.xero.com/api.xro/2.0/payments``. The deposit account is resolved from
+the invoicing ``account/payable`` BFF list by name or code.
 
 Prints JSON on stdout.
 """
@@ -15,7 +14,6 @@ import argparse
 import asyncio
 import json
 import sys
-import uuid
 from datetime import date
 from pathlib import Path
 
@@ -23,22 +21,17 @@ _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval  # noqa: E402
-from noui_runtime.xero_account import get_tenant  # noqa: E402
-from noui_runtime.xero_auth import get_bearer  # noqa: E402
+from noui_runtime.xero_api import xro_put  # noqa: E402
 from noui_runtime.xero_invoicing import get_invoicing_headers, invoicing_fetch  # noqa: E402
-
-API_BASE = "https://api.xero.com/api.xro/2.0"
-PAGE_MATCH = "go.xero.com"
 
 
 def _xero_date(d: date) -> str:
     return d.strftime("%d %b %Y")
 
 
-async def _resolve_account(ws_url: str, headers: dict, account: str) -> dict:
+async def _resolve_account(headers: dict, account: str) -> dict:
     """Resolve a deposit account (by id, code, or name) from account/payable."""
-    res = await invoicing_fetch(ws_url, headers, "account/payable")
+    res = await invoicing_fetch("account/payable", headers=headers)
     accounts = json.loads(res["body"]) if res.get("status") == 200 and res.get("body") else []
     needle = account.strip().lower()
     for a in accounts:
@@ -54,31 +47,6 @@ async def _resolve_account(ws_url: str, headers: dict, account: str) -> dict:
         f"No payable account matching {account!r}. "
         f"Available: {', '.join((a.get('Name') or '') for a in accounts[:8])}"
     )
-
-
-async def _put_payment(
-    ws_url: str, bearer: str, tenant_id: str, shortcode: str, payment: dict
-) -> dict:
-    url = f"{API_BASE}/payments"
-    init = {
-        "method": "PUT",
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "xero-tenant-id": tenant_id,
-            "xero-tenant-shortcode": shortcode,
-            "xero-shell-app-name": "Invoicing",
-            "xero-correlation-id": str(uuid.uuid4()),
-        },
-        "body": json.dumps({"Payments": [payment]}),
-    }
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    return await cdp_eval(ws_url, js)
 
 
 async def execute(
@@ -100,11 +68,8 @@ async def execute(
     Returns:
         {invoice_id, payment_id, amount, account, date, status}
     """
-    ws_url, headers = await get_invoicing_headers()
-    acct = await _resolve_account(ws_url, headers, account)
-
-    bearer = await get_bearer()
-    tenant_id, shortcode = await get_tenant(ws_url, bearer)
+    headers = await get_invoicing_headers()
+    acct = await _resolve_account(headers, account)
 
     pay_date = date.fromisoformat(payment_date) if payment_date else date.today()
     payment = {
@@ -116,18 +81,7 @@ async def execute(
         "CurrencyRate": None,
     }
 
-    res = await _put_payment(ws_url, bearer, tenant_id, shortcode, payment)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        tenant_id, shortcode = await get_tenant(ws_url, bearer, force=True)
-        res = await _put_payment(ws_url, bearer, tenant_id, shortcode, payment)
-
-    if res.get("status") not in (200, 201):
-        raise RuntimeError(
-            f"payments PUT returned {res.get('status')}: {str(res.get('body'))[:400]}"
-        )
-
-    data = json.loads(res["body"]) if res.get("body") else {}
+    data = await xro_put("payments", {"Payments": [payment]})
     payments = data.get("Payments") or []
     pid = payments[0].get("PaymentID") if payments else None
     pstatus = payments[0].get("Status") if payments else None

@@ -2,8 +2,8 @@
 """Skill operation: list_contacts
 
 Lists contacts for the authenticated Xero organisation, with an optional
-name/email filter. Runs inside Tabby's authenticated browser via CDP using a
-sniffed in-memory bearer token. See noui_runtime/xero_auth.py.
+name/email filter. Runs through Tabby's POST /execute/fetch inside the
+authenticated Xero browser session. See noui_runtime/xero_api.py.
 
 Prints JSON on stdout.
 """
@@ -14,41 +14,13 @@ import argparse
 import asyncio
 import json
 import sys
-import uuid
 from pathlib import Path
 
 _SKILL_ROOT = Path(__file__).resolve().parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
-from noui_runtime.cdp import cdp_eval, find_page  # noqa: E402
-from noui_runtime.xero_account import get_tenant  # noqa: E402
-from noui_runtime.xero_auth import get_bearer  # noqa: E402
-
-API_BASE = "https://api.xero.com/api.xro/2.0"
-PAGE_MATCH = "go.xero.com"
-SHELL_APP = "Invoicing"
-
-
-async def _fetch(ws_url: str, bearer: str, tenant_id: str, shortcode: str, page: int) -> dict:
-    url = f"{API_BASE}/Contacts?page={page}"
-    init = {
-        "method": "GET",
-        "credentials": "omit",
-        "headers": {
-            "Authorization": bearer,
-            "Accept": "application/json",
-            "xero-tenant-id": tenant_id,
-            "xero-tenant-shortcode": shortcode,
-            "xero-shell-app-name": SHELL_APP,
-            "xero-correlation-id": str(uuid.uuid4()),
-        },
-    }
-    js = (
-        f"fetch({json.dumps(url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    return await cdp_eval(ws_url, js)
+from noui_runtime.xero_api import xro_get  # noqa: E402
 
 
 async def execute(query: str = "", page: int = 1) -> dict:
@@ -61,27 +33,8 @@ async def execute(query: str = "", page: int = 1) -> dict:
     Returns:
         {count, page, contacts: [{id, name, email, status, is_customer, is_supplier}]}
     """
-    ws_url = await find_page(PAGE_MATCH)
-    if not ws_url:
-        raise RuntimeError(
-            f"No Tabby page matching {PAGE_MATCH!r}. Run "
-            "`tabby session ensure --profile xero` and open go.xero.com."
-        )
-
-    bearer = await get_bearer()
-    tenant_id, shortcode = await get_tenant(ws_url, bearer)
-    res = await _fetch(ws_url, bearer, tenant_id, shortcode, page)
-    if res.get("status") in (401, 403):
-        bearer = await get_bearer(force=True)
-        tenant_id, shortcode = await get_tenant(ws_url, bearer, force=True)
-        res = await _fetch(ws_url, bearer, tenant_id, shortcode, page)
-
-    if res.get("status") != 200:
-        raise RuntimeError(
-            f"Xero Contacts API returned {res.get('status')}: {str(res.get('body'))[:300]}"
-        )
-
-    raw = ((json.loads(res["body"]) or {}).get("Contacts")) or []
+    data = await xro_get(f"Contacts?page={page}")
+    raw = data.get("Contacts") or []
     needle = query.strip().lower()
     contacts = []
     for c in raw:

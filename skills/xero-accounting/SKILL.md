@@ -11,11 +11,11 @@ standalone CLI script that prints JSON to stdout.
 
 ## How it works
 
-Execution runs inside Tabby's authenticated Xero browser via CDP. The Xero SPA
-holds a short-lived in-memory **bearer token** and calls `api.xero.com` with
-`xero-tenant-id`, `xero-tenant-shortcode`, and `xero-shell-app-name` headers. Each
-operation sniffs the live bearer, resolves the tenant, and replays the call with
-`credentials:'omit'`. See `noui_runtime/xero_api.py`, `xero_auth.py`, `xero_account.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Xero browser session** (see `noui_runtime/execute.py`,
+`noui_runtime/xero_api.py`, `noui_runtime/xero_account.py`). The session's own
+auth is applied by the browser, so no bearer token is sniffed or passed from Python.
+Tenant routing headers are resolved via the Organisation API or env overrides.
 
 ## Prerequisites
 

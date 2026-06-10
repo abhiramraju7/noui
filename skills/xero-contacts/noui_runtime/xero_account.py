@@ -1,25 +1,25 @@
-"""Xero tenant resolver.
+"""Xero tenant resolver (Tabby-routed).
 
-Xero accounting API calls require ``xero-tenant-id`` and ``xero-tenant-shortcode``
-headers alongside the bearer token. This module resolves them once at runtime:
+Xero accounting and invoicing API calls require ``xero-tenant-id`` and
+``xero-tenant-shortcode`` headers. This module resolves them once at runtime:
 
   1. ``XERO_TENANT_ID`` / ``XERO_TENANT_SHORTCODE`` env vars (explicit override).
   2. Disk cache (``/tmp/noui_xero_account.json``).
-  3. The authenticated browser page URL (shortcode from ``/app/!XXXX/``) plus the
-     Xero shell organisations API (tenant UUID).
+  3. ``GET api.xero.com/api.xro/2.0/Organisation`` through Tabby's
+     ``POST /execute/fetch`` (runs inside the authenticated browser session;
+     the SPA injects bearer auth automatically).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import uuid
 from pathlib import Path
 
-from .cdp import cdp_eval
+from .xero_http import fetch_raw
 
-PAGE_MATCH = "go.xero.com"
+API_BASE = "https://api.xero.com/api.xro/2.0"
 CACHE_PATH = Path("/tmp/noui_xero_account.json")
 ENV_TENANT = "XERO_TENANT_ID"
 ENV_SHORTCODE = "XERO_TENANT_SHORTCODE"
@@ -44,51 +44,33 @@ def _write_cache(data: dict) -> None:
         pass
 
 
-async def _shortcode_from_url(ws_url: str) -> str | None:
-    info = await cdp_eval(ws_url, "JSON.stringify({path: location.pathname})")
-    m = re.search(r"/app/([^/]+)/", info.get("path", ""))
-    return m.group(1) if m else None
-
-
-async def _tenant_from_shell(ws_url: str, bearer: str, shortcode: str) -> str | None:
-    shell_url = f"https://go.xero.com/api/shell/organisations/{shortcode}"
+async def _resolve() -> dict:
     headers = {
-        "Authorization": bearer,
         "Accept": "application/json",
-        "xero-tenant-shortcode": shortcode,
         "xero-shell-app-name": SHELL_APP,
         "xero-correlation-id": str(uuid.uuid4()),
     }
-    init = {"method": "GET", "credentials": "omit", "headers": headers}
-    js = (
-        f"fetch({json.dumps(shell_url)}, {json.dumps(init)}).then("
-        "r => r.text().then(t => JSON.stringify({status: r.status, body: t})))"
-    )
-    res = await cdp_eval(ws_url, js)
+    res = await fetch_raw(f"{API_BASE}/Organisation", headers=headers)
     if res.get("status") != 200:
-        return None
-    body = json.loads(res["body"])
-    return body.get("organisationId") or body.get("id") or body.get("tenantId")
-
-
-async def _resolve(ws_url: str, bearer: str) -> dict:
-    shortcode = await _shortcode_from_url(ws_url)
-    if not shortcode:
         raise RuntimeError(
-            "Could not read Xero org shortcode from the browser URL. Open "
-            "go.xero.com/app/<shortcode>/... in Tabby, or set XERO_TENANT_SHORTCODE."
+            f"Could not resolve Xero tenant from Organisation "
+            f"({res.get('status')}): {str(res.get('body'))[:300]}"
         )
-    tenant_id = await _tenant_from_shell(ws_url, bearer, shortcode)
-    if not tenant_id:
+    data = json.loads(res.get("body") or "{}")
+    org = ((data.get("Organisations") or [{}])[0]) or {}
+    tenant_id = org.get("OrganisationID")
+    shortcode = org.get("ShortCode")
+    if not tenant_id or not shortcode:
         raise RuntimeError(
-            "Could not resolve Xero tenant id from the shell API. Set XERO_TENANT_ID to override."
+            "Organisation response missing OrganisationID or ShortCode. "
+            f"Set {ENV_TENANT} and {ENV_SHORTCODE} to override."
         )
     resolved = {"tenant_id": tenant_id, "shortcode": shortcode}
     _write_cache(resolved)
     return resolved
 
 
-async def get_tenant(ws_url: str, bearer: str, force: bool = False) -> tuple[str, str]:
+async def get_tenant(force: bool = False) -> tuple[str, str]:
     """Return ``(tenant_id, shortcode)`` for the authenticated Xero org."""
     if not force:
         env_id = os.environ.get(ENV_TENANT, "").strip()
@@ -98,5 +80,5 @@ async def get_tenant(ws_url: str, bearer: str, force: bool = False) -> tuple[str
         cached = _read_cache()
         if cached.get("tenant_id") and cached.get("shortcode"):
             return cached["tenant_id"], cached["shortcode"]
-    resolved = await _resolve(ws_url, bearer)
+    resolved = await _resolve()
     return resolved["tenant_id"], resolved["shortcode"]

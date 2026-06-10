@@ -11,12 +11,11 @@ script that prints a JSON response to stdout.
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Zoho Books browser session** via
-CDP. Calls hit the `books.zoho.in/api/v3/*` REST API with session cookies
-(`credentials:'include'`); writes add a sniffed `X-ZCSRF-TOKEN` header. The
-`organization_id` is parsed from the open Books tab URL. See
-`noui_runtime/zoho_books.py`. Customers and deposit accounts are resolved by
-name via `noui_runtime/zoho_resolve.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Zoho Books browser session** (see
+`noui_runtime/execute.py` and `noui_runtime/zoho_books.py`). Session cookies and
+CSRF are applied by the browser, so nothing is sniffed or passed from Python. The
+`organization_id` is resolved via env override, disk cache, or the organizations API.
 
 Region defaults to `books.zoho.in`; override with `ZOHO_BOOKS_DOMAIN` /
 `ZOHO_ORGANIZATION_ID`.
@@ -27,8 +26,7 @@ Region defaults to `books.zoho.in`; override with `ZOHO_BOOKS_DOMAIN` /
    ```bash
    .venv/bin/python cli/main.py tabby session ensure --profile zoho-books --open https://books.zoho.in
    ```
-   Zoho uses OTP-only sign-in, so login is human-in-the-loop via `chrome://inspect`
-   (`localhost:9222`).
+   Zoho uses OTP-only sign-in, so login is human-in-the-loop in the Tabby browser session.
 
 ## Operations
 
@@ -97,4 +95,4 @@ Emailing a draft marks it Sent.
 
 - `create_invoice`, `email_invoice`, and `record_payment` **write data**.
 - Reference data (accounts, taxes, items, organization) lives in `zoho-books-accounting`.
-- If a write returns 401/403, the runtime re-sniffs a fresh CSRF token once and retries.
+- Auth is handled by the Tabby browser session; on a persistent 401/403, refresh it with `tabby session ensure --profile zoho-books`.

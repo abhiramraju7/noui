@@ -11,10 +11,11 @@ response to stdout. **Read-only.**
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Zoho Books browser session** via
-CDP against `books.zoho.in/api/v3/*` with session cookies
-(`credentials:'include'`). The `organization_id` is parsed from the open Books
-tab URL. See `noui_runtime/zoho_books.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Zoho Books browser session** (see
+`noui_runtime/execute.py` and `noui_runtime/zoho_books.py`). Session cookies and
+CSRF are applied by the browser, so nothing is sniffed or passed from Python. The
+`organization_id` is resolved via env override, disk cache, or the organizations API.
 
 Region defaults to `books.zoho.in`; override with `ZOHO_BOOKS_DOMAIN` /
 `ZOHO_ORGANIZATION_ID`.
@@ -25,8 +26,7 @@ Region defaults to `books.zoho.in`; override with `ZOHO_BOOKS_DOMAIN` /
    ```bash
    .venv/bin/python cli/main.py tabby session ensure --profile zoho-books --open https://books.zoho.in
    ```
-   Zoho uses OTP-only sign-in, so login is human-in-the-loop via `chrome://inspect`
-   (`localhost:9222`).
+   Zoho uses OTP-only sign-in, so login is human-in-the-loop in the Tabby browser session.
 
 ## Operations
 

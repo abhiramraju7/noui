@@ -14,13 +14,13 @@
     "requires_auth": true,
     "profile_slug": "zoho-books",
     "profile_db_id": "ac128c7c-d0d5-45d0-99e3-079c4ec32a86",
-    "strategy": "tabby_credentials",
-    "execution_strategy": "cdp_browser_session"
+    "strategy": "tabby_execute"
   },
   "runtime": {
     "type": "claude-code-skill",
     "entrypoint": "SKILL.md",
     "operation_style": "subprocess-cli",
+    "transport": "execute",
     "python": ">=3.11",
     "python_executable": ".venv/bin/python"
   },

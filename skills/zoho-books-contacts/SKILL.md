@@ -11,16 +11,14 @@ response to stdout.
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Zoho Books browser session** via
-CDP. The Zoho Books web app (`books.zoho.in`) authenticates with **session
-cookies** and guards writes with an `X-ZCSRF-TOKEN` header. Each operation runs
-`fetch()` inside the browser with `credentials:'include'` (cookies attached) and
-sniffs the CSRF token from a live request for write calls. The
-`organization_id` is parsed from the `books.zoho.in/app/<org>#/...` page URL.
-See `noui_runtime/zoho_books.py`.
+Execution runs through Tabby's `POST /execute/fetch`, which runs `fetch()`
+**inside the authenticated Zoho Books browser session** (see
+`noui_runtime/execute.py` and `noui_runtime/zoho_books.py`). Session cookies and
+CSRF are applied by the browser, so nothing is sniffed or passed from Python. The
+`organization_id` is resolved via env override, disk cache, or the organizations API.
 
-Region defaults to the India DC (`books.zoho.in`). Override with
-`ZOHO_BOOKS_DOMAIN` (e.g. `books.zoho.com`) and `ZOHO_ORGANIZATION_ID` if needed.
+Region defaults to `books.zoho.in`; override with `ZOHO_BOOKS_DOMAIN` /
+`ZOHO_ORGANIZATION_ID`.
 
 ## Prerequisites
 
@@ -28,8 +26,7 @@ Region defaults to the India DC (`books.zoho.in`). Override with
    ```bash
    .venv/bin/python cli/main.py tabby session ensure --profile zoho-books --open https://books.zoho.in
    ```
-   Zoho uses OTP-only sign-in, so login is human-in-the-loop via `chrome://inspect`
-   (`localhost:9222`).
+   Zoho uses OTP-only sign-in, so login is human-in-the-loop in the Tabby browser session.
 2. The Tabby session must have a page open on `books.zoho.in/app/<org>/...` at call time.
 
 ## Operations
@@ -67,4 +64,4 @@ Region defaults to the India DC (`books.zoho.in`). Override with
 - `create_contact` **writes data** — it adds a real contact to the organization.
 - For invoices use `zoho-books-invoices`; for reference data (accounts, taxes,
   items, organization) use `zoho-books-accounting`.
-- If a write returns 401/403, the runtime re-sniffs a fresh CSRF token once and retries.
+- Auth is handled by the Tabby browser session; on a persistent 401/403, refresh it with `tabby session ensure --profile zoho-books`.

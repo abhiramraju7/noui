@@ -2,8 +2,8 @@
 """Skill operation: create_contact
 
 Creates a contact (customer or vendor) in the authenticated Zoho Books org.
-Runs inside Tabby's authenticated browser via CDP (cookie auth + sniffed
-X-ZCSRF-TOKEN). Writes data.
+Runs through Tabby's POST /execute/fetch inside the authenticated Zoho Books
+browser session. See noui_runtime/zoho_books.py. Writes data.
 
 Prints JSON on stdout.
 """

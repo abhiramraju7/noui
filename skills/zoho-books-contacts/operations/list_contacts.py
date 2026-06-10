@@ -2,7 +2,7 @@
 """Skill operation: list_contacts
 
 Lists contacts (customers/vendors) for the authenticated Zoho Books org, with an
-optional name filter. Runs inside Tabby's authenticated browser via CDP.
+optional name filter. Runs through Tabby's POST /execute/fetch. See noui_runtime/zoho_books.py.
 
 Prints JSON on stdout.
 """

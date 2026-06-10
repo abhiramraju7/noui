@@ -10,12 +10,12 @@ under `operations/` is a standalone CLI script that prints JSON to stdout.
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Wave browser session** via CDP.
-The Wave web app calls `gql.waveapps.com/graphql/public` with a short-lived
-**Bearer token** sniffed from CDP `Network` events (see `noui_runtime/wave_auth.py`).
-The business id is resolved from the `app.waveapps.com/businesses/<uuid>/...` page
-URL or the first business returned by the `businesses` query (see
-`noui_runtime/wave_gql.py`). Override with `WAVE_BUSINESS_ID`.
+Each operation calls `gql.waveapps.com/graphql/public` through Tabby's
+`POST /execute/fetch` endpoint, which runs `fetch()` **inside the authenticated
+Wave browser session** (see `noui_runtime/execute.py`). The session's own auth is
+applied by the browser, so no token is extracted or passed from Python. The
+business id is resolved from the first business returned by the `businesses`
+query (see `noui_runtime/wave_gql.py`). Override with `WAVE_BUSINESS_ID`.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ URL or the first business returned by the `businesses` query (see
    ```bash
    .venv/bin/python cli/main.py tabby session ensure --profile wave --open https://app.waveapps.com
    ```
-   Login is human-in-the-loop via `chrome://inspect` (`localhost:9222`).
+   Login is human-in-the-loop in the Tabby session.
 
 ## Operations
 
@@ -44,4 +44,4 @@ URL or the first business returned by the `businesses` query (see
 
 - `create_customer` **writes data**.
 - For invoices use `wave-invoices`; for accounts/products use `wave-accounting`.
-- If a call returns 401/403, the runtime re-sniffs a fresh bearer once and retries.
+- Auth is handled by the Tabby browser session; if a call fails with 401/403, refresh the session with `tabby session ensure --profile wave`.

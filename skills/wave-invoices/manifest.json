@@ -14,13 +14,13 @@
     "requires_auth": true,
     "profile_slug": "wave",
     "profile_db_id": "2af4d10c-00c3-484e-b8db-48eaca08fdc1",
-    "strategy": "tabby_credentials",
-    "execution_strategy": "cdp_browser_session"
+    "strategy": "tabby_execute"
   },
   "runtime": {
     "type": "claude-code-skill",
     "entrypoint": "SKILL.md",
     "operation_style": "subprocess-cli",
+    "transport": "execute",
     "python": ">=3.11",
     "python_executable": ".venv/bin/python"
   },

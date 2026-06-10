@@ -11,11 +11,13 @@ that prints JSON to stdout.
 
 ## How it works
 
-Execution runs **inside Tabby's authenticated Wave browser session** via CDP
-against `gql.waveapps.com/graphql/public` with a sniffed Bearer token (see
-`noui_runtime/wave_auth.py`). Customers, products, and payment accounts are
-resolved by name via `noui_runtime/wave_resolve.py`. The business id is resolved
-from the open Wave tab URL (see `noui_runtime/wave_gql.py`).
+Each operation calls `gql.waveapps.com/graphql/public` through Tabby's
+`POST /execute/fetch`, which runs `fetch()` **inside the authenticated Wave
+browser session** (see `noui_runtime/execute.py`). The session's own auth is
+applied by the browser, so no token is extracted or passed from Python.
+Customers, products, and payment accounts are resolved by name via
+`noui_runtime/wave_resolve.py`. The business id is resolved via the `businesses`
+query (see `noui_runtime/wave_gql.py`); override with `WAVE_BUSINESS_ID`.
 
 ## Prerequisites
 
@@ -23,7 +25,7 @@ from the open Wave tab URL (see `noui_runtime/wave_gql.py`).
 .venv/bin/python cli/main.py tabby session ensure --profile wave --open https://app.waveapps.com
 ```
 
-Login is human-in-the-loop via `chrome://inspect` (`localhost:9222`).
+Login is human-in-the-loop in the Tabby session.
 
 ## Operations
 

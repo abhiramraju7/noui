@@ -9,8 +9,10 @@ Read reference data for the authenticated Wave business. **Read-only.**
 
 ## How it works
 
-CDP-backed GraphQL calls to `gql.waveapps.com/graphql/public` with a sniffed
-Bearer token. See `noui_runtime/wave_auth.py` and `noui_runtime/wave_gql.py`.
+GraphQL calls to `gql.waveapps.com/graphql/public` run through Tabby's
+`POST /execute/fetch`, i.e. `fetch()` executed **inside the authenticated Wave
+browser session** — no token is extracted or passed from Python. See
+`noui_runtime/execute.py` and `noui_runtime/wave_gql.py`.
 
 ## Prerequisites
 

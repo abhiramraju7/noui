@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Skill operation: create_customer — create a Wave customer."""
+"""Skill operation: create_customer — create a Wave customer.
+
+Runs through Tabby's POST /execute/fetch, i.e. fetch() inside the authenticated Wave browser session via GraphQL. See noui_runtime/wave_gql.py.
+"""
 
 from __future__ import annotations
 

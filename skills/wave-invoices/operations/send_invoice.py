@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Skill operation: send_invoice — email a Wave invoice to its customer."""
+"""Skill operation: send_invoice — email a Wave invoice to its customer.
+
+Runs through Tabby's POST /execute/fetch, i.e. fetch() inside the authenticated Wave browser session via GraphQL. See noui_runtime/wave_gql.py.
+"""
 
 from __future__ import annotations
 

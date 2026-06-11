@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Skill operation: get_business — fetch the open Wave business profile."""
+"""Skill operation: get_business — fetch the open Wave business profile.
+
+Runs through Tabby's POST /execute/fetch, i.e. fetch() inside the authenticated Wave browser session via GraphQL. See noui_runtime/wave_gql.py.
+"""
 
 from __future__ import annotations
 

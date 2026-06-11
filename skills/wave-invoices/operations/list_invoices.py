@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Skill operation: list_invoices — list Wave invoices for the open business."""
+"""Skill operation: list_invoices — list Wave invoices for the open business.
+
+Runs through Tabby's POST /execute/fetch, i.e. fetch() inside the authenticated Wave browser session via GraphQL. See noui_runtime/wave_gql.py.
+"""
 
 from __future__ import annotations
 

@@ -524,6 +524,32 @@ class TestSkillHarnessExecutionMode:
         assert manifest["warnings"], "manifest must carry the G1 warning"
         assert "cannot run in the harness" in (out / "SKILL.md").read_text()
 
+    def test_browser_managed_headers_dropped_from_recipes(self) -> None:
+        """call_web_api runs in a real browser — recorded fingerprint headers are noise."""
+        entry = _entry(
+            "https://api.example.com/v1/widgets",
+            request_headers=[
+                {"name": "User-Agent", "value": "Mozilla/5.0"},
+                {"name": "sec-ch-ua-platform", "value": '"Linux"'},
+                {"name": "Sec-Fetch-Mode", "value": "cors"},
+                {"name": "Cookie", "value": "session=abc"},
+                {"name": "Accept", "value": "application/json"},
+                {"name": "X-Custom-Token", "value": "keep-me"},
+            ],
+            response_headers=[{"name": "Set-Cookie", "value": "session=abc; Path=/"}],
+        )
+        out, _ = _compile(
+            _har([entry]), profile_slug="example", execution_mode="harness"
+        )
+        recipe = json.loads((out / "operations.json").read_text())["operations"][0]
+        headers = recipe.get("headers", {})
+        assert "Accept" in headers
+        assert "X-Custom-Token" in headers
+        assert "User-Agent" not in headers
+        assert "sec-ch-ua-platform" not in headers
+        assert "Sec-Fetch-Mode" not in headers
+        assert "Cookie" not in headers
+
     def test_cookie_auth_does_not_warn(self) -> None:
         import warnings as _warnings
 

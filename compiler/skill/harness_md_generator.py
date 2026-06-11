@@ -32,6 +32,35 @@ from compiler.skill.skill_md_generator import (
 # used in doc text, never enforced here.
 _RESULT_CAP_CHARS_DEFAULT = 20_000
 
+# Headers the executing browser manages itself. call_web_api runs the request
+# as fetch() inside a real browser page, so recorded fingerprint/transport
+# headers are at best noise and at worst conflict with the live session.
+_BROWSER_MANAGED_HEADER_PREFIXES = ("sec-ch-", "sec-fetch-")
+_BROWSER_MANAGED_HEADERS = frozenset(
+    {
+        "user-agent",
+        "referer",
+        "origin",
+        "host",
+        "cookie",
+        "content-length",
+        "accept-encoding",
+        "accept-language",
+        "connection",
+        "priority",
+        "pragma",
+        "cache-control",
+        "upgrade-insecure-requests",
+    }
+)
+
+
+def _is_browser_managed(header_name: str) -> bool:
+    lowered = header_name.lower()
+    return lowered in _BROWSER_MANAGED_HEADERS or lowered.startswith(
+        _BROWSER_MANAGED_HEADER_PREFIXES
+    )
+
 
 def build_operation_recipe(td: dict, *, profile_slug: str) -> dict:
     """Build the machine-readable request recipe for one recorded operation."""
@@ -41,7 +70,9 @@ def build_operation_recipe(td: dict, *, profile_slug: str) -> dict:
     request_headers: list[dict] = td.get("request_headers", [])
 
     static_headers = {
-        h["name"]: h["value"] for h in request_headers if h.get("name") and h.get("value")
+        h["name"]: h["value"]
+        for h in request_headers
+        if h.get("name") and h.get("value") and not _is_browser_managed(h["name"])
     }
 
     def _params_in(source: str) -> list[dict]:

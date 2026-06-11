@@ -27,7 +27,7 @@
   "operations": [
     {
       "name": "list_invoices",
-      "description": "List invoices for the authenticated Wave business. Returns id, number, customer, status, total, balance, currency, and dates.",
+      "description": "List invoices for the authenticated Wave business via Tabby-routed GraphQL. Returns id, number, customer, status, total, balance, currency, and dates.",
       "module": "operations/list_invoices.py",
       "entry": "execute",
       "method": "POST",
@@ -39,7 +39,7 @@
     },
     {
       "name": "get_invoice",
-      "description": "Fetch one invoice by id, including line items and payment status.",
+      "description": "Fetch one Wave invoice by GraphQL id via Tabby-routed GraphQL, including line items and payment status.",
       "module": "operations/get_invoice.py",
       "entry": "execute",
       "method": "POST",
@@ -67,7 +67,7 @@
     },
     {
       "name": "send_invoice",
-      "description": "Email an invoice via invoiceSend (requires Business.emailSendEnabled). Uses customer email unless --to is passed.",
+      "description": "Email a Wave invoice via Tabby-routed GraphQL invoiceSend (requires Business.emailSendEnabled). Uses customer email unless --to is passed.",
       "module": "operations/send_invoice.py",
       "entry": "execute",
       "method": "POST",
@@ -81,7 +81,7 @@
     },
     {
       "name": "record_payment",
-      "description": "Record a manual payment against an invoice via invoicePaymentCreateManual. Resolves the payment account by name/id.",
+      "description": "Record a manual payment against a Wave invoice via Tabby-routed GraphQL invoicePaymentCreateManual. Resolves the payment account by name or id.",
       "module": "operations/record_payment.py",
       "entry": "execute",
       "method": "POST",

@@ -27,7 +27,7 @@
   "operations": [
     {
       "name": "list_customers",
-      "description": "List customers for the authenticated Wave business via GraphQL. Returns id, name, email, phone, outstanding.",
+      "description": "List customers for the authenticated Wave business via Tabby-routed GraphQL, with an optional name/email filter. Returns id, name, email, phone, and outstanding balance.",
       "module": "operations/list_customers.py",
       "entry": "execute",
       "method": "POST",
@@ -39,7 +39,7 @@
     },
     {
       "name": "create_customer",
-      "description": "Create a customer in Wave with name and optional email/phone.",
+      "description": "Create a customer in Wave via Tabby-routed GraphQL with name and optional email and phone.",
       "module": "operations/create_customer.py",
       "entry": "execute",
       "method": "POST",

@@ -1,7 +1,7 @@
 [project]
 name = "wave-invoices"
 version = "0.1.0"
-description = "NoUI-generated skill for listing, creating, sending, and paying Wave invoices."
+description = "NoUI skill for listing, creating, sending, and paying Wave invoices via Tabby-routed GraphQL."
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",

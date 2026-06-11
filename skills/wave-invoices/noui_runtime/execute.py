@@ -1,8 +1,8 @@
 """NoUI runtime execute adapter — fetch and browser commands via Tabby HTTP API.
 
-Calls Tabby's POST /execute/fetch and POST /execute/browser endpoints instead of
-connecting to the browser via CDP WebSocket. Cookies and TLS fingerprint come from
-the real authenticated browser session.
+Routes HTTP through Tabby's POST /execute/fetch and POST /execute/browser so
+``fetch()`` runs inside the real authenticated browser session (cookies + TLS
+fingerprint). Python never connects to Chrome CDP or extracts tokens.
 
 Requires:
   - A running Tabby session for the target profile.

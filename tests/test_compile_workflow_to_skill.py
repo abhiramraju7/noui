@@ -427,6 +427,115 @@ class TestSkillExecutionModeValidation:
 
 
 # ---------------------------------------------------------------------------
+# Execution mode — harness (Agent Harness target, no transport code)
+# ---------------------------------------------------------------------------
+
+
+def _cookie_auth_har() -> dict:
+    """HAR whose auth signal is session cookies → tabby_credentials strategy."""
+    entry = _entry(
+        "https://api.example.com/v1/widgets?id=1",
+        request_headers=[{"name": "Cookie", "value": "session=abc"}],
+        response_headers=[{"name": "Set-Cookie", "value": "session=abc; Path=/"}],
+    )
+    entry["request"]["queryString"] = [{"name": "id", "value": "1"}]
+    return _har([entry])
+
+
+class TestSkillHarnessExecutionMode:
+    """execution_mode='harness' ships recipes, never transport code."""
+
+    def test_tree_has_no_transport_code(self) -> None:
+        out, _ = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        assert (out / "SKILL.md").is_file()
+        assert (out / "manifest.json").is_file()
+        assert (out / "API.md").is_file()
+        assert (out / "operations.json").is_file()
+        assert (out / "auth_plan.json").is_file()
+        # The whole point: nothing executable, no Python environment.
+        assert not (out / "noui_runtime").exists()
+        assert not (out / "operations").exists()
+        assert not (out / "pyproject.toml").exists()
+        assert not (out / ".python-version").exists()
+
+    def test_skill_md_renders_call_web_api_cards(self) -> None:
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        body = (out / "SKILL.md").read_text()
+        assert "call_web_api" in body
+        assert '"app": "example"' in body
+        for op in manifest["operations"]:
+            assert f"### `{op['name']}`" in body
+        # No venv/script mechanics may leak into a harness skill.
+        assert ".venv" not in body
+        assert "uv sync" not in body
+        assert "operations/" not in body
+
+    def test_unauth_skill_md_renders_curl_cards(self) -> None:
+        out, _ = _compile(
+            _har([_entry("https://api.example.com/v1/widgets?id=1")]),
+            execution_mode="harness",
+        )
+        body = (out / "SKILL.md").read_text()
+        assert "curl" in body
+        assert '"app"' not in body
+
+    def test_operations_json_recipes(self) -> None:
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        recipes = json.loads((out / "operations.json").read_text())["operations"]
+        assert len(recipes) == len(manifest["operations"])
+        recipe = recipes[0]
+        assert recipe["tool"] == "call_web_api"
+        assert recipe["app"] == "example"
+        assert recipe["url_template"].startswith("https://api.example.com")
+        assert recipe["method"] == "GET"
+        assert any(p["name"] == "id" for p in recipe["query_params"])
+
+    def test_manifest_harness_fields(self) -> None:
+        _, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        assert manifest["auth"]["execution_strategy"] == "harness_call_web_api"
+        assert manifest["runtime"]["type"] == "agent-harness-skill"
+        assert manifest["runtime"]["operation_style"] == "call_web_api"
+        assert "python_executable" not in manifest["runtime"]
+        op = manifest["operations"][0]
+        assert op["recipe"] == "operations.json"
+        assert op["tool"] == "call_web_api"
+        assert "module" not in op
+
+    def test_static_secret_header_hard_warns(self) -> None:
+        """G1: a static-API-key workflow cannot run in the harness — warn loudly."""
+        har = _har(
+            [
+                _entry(
+                    "https://api.example.com/v1/widgets",
+                    request_headers=[{"name": "Authorization", "value": "Bearer t"}],
+                )
+            ]
+        )
+        with pytest.warns(UserWarning, match="static secret header"):
+            out, manifest = _compile(har, profile_slug="example", execution_mode="harness")
+        assert manifest["warnings"], "manifest must carry the G1 warning"
+        assert "cannot run in the harness" in (out / "SKILL.md").read_text()
+
+    def test_cookie_auth_does_not_warn(self) -> None:
+        import warnings as _warnings
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error")
+            _, manifest = _compile(
+                _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+            )
+        assert "warnings" not in manifest
+
+
+# ---------------------------------------------------------------------------
 # Empty / non-API HARs must be rejected at the same layer as the MCP compiler
 # ---------------------------------------------------------------------------
 

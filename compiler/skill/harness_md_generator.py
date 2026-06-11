@@ -22,6 +22,7 @@ profile and re-export if the site turns out to be bot-protected.
 from __future__ import annotations
 
 import json
+import re
 
 from compiler.skill.skill_md_generator import (
     _escape_yaml_scalar,
@@ -62,7 +63,49 @@ def _is_browser_managed(header_name: str) -> bool:
     )
 
 
-def build_operation_recipe(td: dict, *, profile_slug: str) -> dict:
+def _secret_placeholder_headers(auth_plan: dict | None) -> dict[str, str]:
+    """For a static_secret_header workflow, emit placeholder headers the
+    harness resolves server-side (gap G1).
+
+    The recorded API key is never emitted — only a ``${SECRET:name}`` token.
+    The harness substitutes the real value from its secret store just before
+    the request leaves for Tabby, so the key never enters the model context.
+    Maps the auth_plan fallback's ``value_template`` (e.g.
+    ``"Bearer ${ADOPT_BANK_API_KEY}"``) to ``"Bearer ${SECRET:adopt_bank_api_key}"``.
+    """
+    if not auth_plan or auth_plan.get("strategy") != "static_secret_header":
+        return {}
+    out: dict[str, str] = {}
+    for fb in auth_plan.get("fallbacks", []):
+        if fb.get("type") != "static_secret_header":
+            continue
+        header = fb.get("header")
+        if not header:
+            continue
+        env_var = fb.get("secret_env_var", "") or header.upper().replace("-", "_")
+        name = env_var.lower()
+        template = fb.get("value_template") or ""
+        if template and env_var and ("${" + env_var + "}") in template:
+            out[header] = template.replace("${" + env_var + "}", "${SECRET:" + name + "}")
+        else:
+            out[header] = "${SECRET:" + name + "}"
+    return out
+
+
+_SECRET_NAME_RE = re.compile(r"\$\{SECRET:([A-Za-z0-9_.\-]+)\}")
+
+
+def secret_names(auth_plan: dict | None) -> list[str]:
+    """Names of the ${SECRET:name} placeholders this skill expects configured."""
+    names: list[str] = []
+    for value in _secret_placeholder_headers(auth_plan).values():
+        for name in _SECRET_NAME_RE.findall(value):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def build_operation_recipe(td: dict, *, profile_slug: str, auth_plan: dict | None = None) -> dict:
     """Build the machine-readable request recipe for one recorded operation."""
     method = td["method"].upper()
     base_url = td.get("base_url", "")
@@ -74,6 +117,8 @@ def build_operation_recipe(td: dict, *, profile_slug: str) -> dict:
         for h in request_headers
         if h.get("name") and h.get("value") and not _is_browser_managed(h["name"])
     }
+    # G1: inject server-resolved secret placeholders (e.g. Authorization).
+    static_headers.update(_secret_placeholder_headers(auth_plan))
 
     def _params_in(source: str) -> list[dict]:
         if source == "body":
@@ -109,9 +154,14 @@ def build_operation_recipe(td: dict, *, profile_slug: str) -> dict:
     return recipe
 
 
-def render_operations_json(tool_defs: list[dict], *, profile_slug: str) -> str:
+def render_operations_json(
+    tool_defs: list[dict], *, profile_slug: str, auth_plan: dict | None = None
+) -> str:
     """Render operations.json — every operation's recipe, machine-readable."""
-    recipes = [build_operation_recipe(td, profile_slug=profile_slug) for td in tool_defs]
+    recipes = [
+        build_operation_recipe(td, profile_slug=profile_slug, auth_plan=auth_plan)
+        for td in tool_defs
+    ]
     return json.dumps({"schema_version": "1", "operations": recipes}, indent=2, ensure_ascii=False)
 
 
@@ -124,7 +174,6 @@ def render_harness_skill_md(
     auth_plan: dict,
     profile_slug: str,
     description_override: str = "",
-    static_secret_warning: str = "",
     existing: str | None = None,
 ) -> str:
     """Render SKILL.md for a harness-targeted skill (frontmatter + body)."""
@@ -147,7 +196,6 @@ description: {_escape_yaml_scalar(description)}
         tool_defs=tool_defs,
         auth_plan=auth_plan,
         profile_slug=profile_slug,
-        static_secret_warning=static_secret_warning,
     )
 
     rendered = frontmatter + "\n" + body
@@ -170,9 +218,9 @@ def _render_body(
     tool_defs: list[dict],
     auth_plan: dict,
     profile_slug: str,
-    static_secret_warning: str,
 ) -> str:
     authed = bool(profile_slug)
+    secrets = secret_names(auth_plan)
     sections: list[str] = []
 
     sections.append(f"# {app_name}")
@@ -193,11 +241,6 @@ def _render_body(
         )
     sections.append("")
 
-    if static_secret_warning:
-        sections.append("> ⚠️ **This skill cannot run in the harness as exported.** "
-                        + static_secret_warning)
-        sections.append("")
-
     # Prerequisites
     sections.append("## Prerequisites")
     sections.append("")
@@ -208,11 +251,21 @@ def _render_body(
             f"not — ask an admin to add it)."
         )
         sections.append(
-            "2. Nothing else. No env vars, no venv, no credentials: the harness mints a "
+            "2. No env vars, no venv, no credentials in the skill: the harness mints a "
             "per-member Tabby token for every call. If the member has no live session yet, "
             "`call_web_api` returns `login_required` with a login link — show it to the "
             "user, then retry the same call with `wait_for_login: true`."
         )
+        if secrets:
+            names = ", ".join(f"`{n}`" for n in secrets)
+            sections.append(
+                f"3. This API needs a static secret (an API key). The operation cards below "
+                f"carry it as a `${{SECRET:name}}` placeholder — the harness substitutes the "
+                f"real value server-side, so **pass the placeholder verbatim and never a real "
+                f"key**. An admin must configure the secret(s) {names} in the harness secret "
+                f"store (`AGENT_HARNESS_WEB_API_SECRETS`); an unconfigured secret returns an "
+                f"actionable error naming it."
+            )
     else:
         sections.append(
             "None — the recorded endpoints are public. If calls start failing with 429s or "
@@ -233,16 +286,18 @@ def _render_body(
     if authed:
         sections.append(
             "For each operation below, call the `call_web_api` tool with the shown payload, "
-            "substituting `<param>` placeholders. Responses come back as text (JSON for API "
-            f"endpoints), truncated past ~{_RESULT_CAP_CHARS_DEFAULT:,} characters — prefer "
-            "narrow queries or paginated calls over one huge fetch, and do **not** use "
-            "`call_web_api` for binary downloads."
+            "substituting `<param>` placeholders (and passing any `${SECRET:...}` headers "
+            "verbatim). Text/JSON responses come back inline, truncated past "
+            f"~{_RESULT_CAP_CHARS_DEFAULT:,} characters — prefer narrow or paginated queries "
+            "over one huge fetch."
         )
         sections.append("")
         sections.append(
-            "To post-process a large or fiddly response, save it to the workspace first "
-            "(e.g. write the tool result to `/workspace/<op>.json` with a bash heredoc) and "
-            "shape it with Python from there."
+            "Binary or large responses (e.g. a PDF download) are written into the sandbox "
+            "instead of returned inline: the result is `{status: \"saved_to_sandbox\", path, "
+            "bytes, content_type}`. Read or process that path with the `bash` tool. To "
+            "post-process an inline JSON response, save it to `/workspace/<op>.json` with a "
+            "bash heredoc and shape it with Python."
         )
     else:
         sections.append(
@@ -258,7 +313,7 @@ def _render_body(
     sections.append("")
     for td in tool_defs:
         sections.extend(
-            _render_operation_card(td, profile_slug=profile_slug)
+            _render_operation_card(td, profile_slug=profile_slug, auth_plan=auth_plan)
         )
 
     # Troubleshooting
@@ -324,8 +379,8 @@ def _render_body(
     return "\n".join(sections)
 
 
-def _render_operation_card(td: dict, *, profile_slug: str) -> list[str]:
-    recipe = build_operation_recipe(td, profile_slug=profile_slug)
+def _render_operation_card(td: dict, *, profile_slug: str, auth_plan: dict | None = None) -> list[str]:
+    recipe = build_operation_recipe(td, profile_slug=profile_slug, auth_plan=auth_plan)
     params: list[dict] = td.get("params", [])
 
     lines: list[str] = []

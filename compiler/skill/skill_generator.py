@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import re
-import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,19 +44,12 @@ from compiler.runtime.execute_adapter import generate_execute_adapter
 from compiler.skill.harness_md_generator import (
     render_harness_skill_md,
     render_operations_json,
+    secret_names,
 )
 from compiler.skill.operation_generator import render_skill_operation
 from compiler.skill.skill_md_generator import render_skill_md
 
 _VALID_EXECUTION_MODES = ("tabby", "http", "harness")
-
-_STATIC_SECRET_HARNESS_WARNING = (
-    "The recorded auth uses a static secret header (API key). The Agent Harness "
-    "sandbox has no env vars and `call_web_api` headers transit the model context, "
-    "so there is no safe place for the secret — the skill will not work in the "
-    "harness until server-side secret injection lands (gap G1). Export with "
-    "execution_mode='tabby' for local/MCP use instead."
-)
 
 
 def compile_workflow_to_skill(
@@ -152,12 +144,13 @@ def compile_workflow_to_skill(
             app_slug=app_slug,
         )
 
-    # Harness mode ships no transport code: the sandbox must never hold Tabby
-    # credentials, so a static-secret-header workflow has no safe home there (G1).
-    static_secret_warning = ""
-    if execution_mode == "harness" and auth_plan.get("strategy") == "static_secret_header":
-        static_secret_warning = _STATIC_SECRET_HARNESS_WARNING
-        warnings.warn(static_secret_warning, stacklevel=2)
+    # Harness mode ships no transport code and never holds the secret value: a
+    # static-secret-header workflow emits ${SECRET:name} placeholders that the
+    # harness resolves server-side (gap G1). Record which secrets an admin must
+    # configure in the harness secret store.
+    harness_secrets_required = (
+        secret_names(auth_plan) if execution_mode == "harness" else []
+    )
 
     # 3. noui_runtime/auth.py (shared template, identical bytes for both outputs).
     # Harness mode emits no runtime: operations execute via the harness
@@ -197,7 +190,8 @@ def compile_workflow_to_skill(
     op_entries: list[dict] = []
     if execution_mode == "harness":
         (out_path / "operations.json").write_text(
-            render_operations_json(tool_defs, profile_slug=effective_slug), encoding="utf-8"
+            render_operations_json(tool_defs, profile_slug=effective_slug, auth_plan=auth_plan),
+            encoding="utf-8",
         )
         op_files.append("operations.json")
     else:
@@ -248,7 +242,6 @@ def compile_workflow_to_skill(
             auth_plan=auth_plan,
             profile_slug=effective_slug,
             description_override=description_override,
-            static_secret_warning=static_secret_warning,
         )
     else:
         skill_md = render_skill_md(
@@ -361,7 +354,7 @@ def compile_workflow_to_skill(
             "generator": "noui",
             "generator_version": "v1-skill",
         },
-        **({"warnings": [static_secret_warning]} if static_secret_warning else {}),
+        **({"secrets_required": harness_secrets_required} if harness_secrets_required else {}),
     }
 
     (out_path / "manifest.json").write_text(

@@ -509,20 +509,33 @@ class TestSkillHarnessExecutionMode:
         assert op["tool"] == "call_web_api"
         assert "module" not in op
 
-    def test_static_secret_header_hard_warns(self) -> None:
-        """G1: a static-API-key workflow cannot run in the harness — warn loudly."""
+    def test_static_secret_header_emits_secret_placeholder(self) -> None:
+        """G1 closed: a static-API-key workflow emits a ${SECRET:name} placeholder
+        the harness resolves server-side — the real key never appears."""
         har = _har(
             [
                 _entry(
                     "https://api.example.com/v1/widgets",
-                    request_headers=[{"name": "Authorization", "value": "Bearer t"}],
+                    request_headers=[{"name": "Authorization", "value": "Bearer SUPERSECRET"}],
                 )
             ]
         )
-        with pytest.warns(UserWarning, match="static secret header"):
-            out, manifest = _compile(har, profile_slug="example", execution_mode="harness")
-        assert manifest["warnings"], "manifest must carry the G1 warning"
-        assert "cannot run in the harness" in (out / "SKILL.md").read_text()
+        out, manifest = _compile(har, profile_slug="example", execution_mode="harness")
+        recipe = json.loads((out / "operations.json").read_text())["operations"][0]
+        auth = recipe["headers"]["Authorization"]
+        assert auth.startswith("Bearer ${SECRET:")
+        assert auth.endswith("}")
+        # The recorded secret value must NOT leak anywhere in the skill.
+        assert "SUPERSECRET" not in (out / "operations.json").read_text()
+        assert "SUPERSECRET" not in (out / "SKILL.md").read_text()
+        # The manifest records which secrets an admin must configure.
+        assert manifest["secrets_required"]
+        secret = manifest["secrets_required"][0]
+        assert f"${{SECRET:{secret}}}" in (out / "operations.json").read_text()
+        # SKILL.md guides the agent to pass the placeholder, not a real key.
+        body = (out / "SKILL.md").read_text()
+        assert "${SECRET:" in body
+        assert "never a real key" in body
 
     def test_browser_managed_headers_dropped_from_recipes(self) -> None:
         """call_web_api runs in a real browser — recorded fingerprint headers are noise."""
@@ -550,15 +563,14 @@ class TestSkillHarnessExecutionMode:
         assert "Sec-Fetch-Mode" not in headers
         assert "Cookie" not in headers
 
-    def test_cookie_auth_does_not_warn(self) -> None:
-        import warnings as _warnings
-
-        with _warnings.catch_warnings():
-            _warnings.simplefilter("error")
-            _, manifest = _compile(
-                _cookie_auth_har(), profile_slug="example", execution_mode="harness"
-            )
-        assert "warnings" not in manifest
+    def test_cookie_auth_needs_no_secrets(self) -> None:
+        """Cookie-auth (tabby_credentials) skills carry no ${SECRET} placeholder —
+        the browser session supplies the cookies, nothing to configure."""
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        assert "secrets_required" not in manifest
+        assert "${SECRET:" not in (out / "operations.json").read_text()
 
 
 # ---------------------------------------------------------------------------

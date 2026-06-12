@@ -52,10 +52,13 @@ def _generated_module(env: dict):
     """Exec the generated execute.py into a fresh namespace under a controlled env.
 
     Module-level code reads ADOPT_*/TABBY_* live via os.environ, so the env stays
-    set for the duration of the ``with`` block. A dummy ``__file__`` keeps the
-    .env walk-up from finding a real .env.
+    set for the duration of the ``with`` block. A dummy ``__file__`` plus an empty
+    ``NOUI_ENV_FILE`` keep the generated module's dotenv loader from pulling in a
+    real project ``.env`` (which would leak TABBY_* creds into "missing creds" tests).
     """
     saved = dict(os.environ)
+    empty_env = os.path.join(tempfile.gettempdir(), "noui_gen_execute_test.env")
+    Path(empty_env).touch(exist_ok=True)
     try:
         for key in (
             "NOUI_TABBY_AUTH_MODE",
@@ -67,8 +70,15 @@ def _generated_module(env: dict):
             "TABBY_API_URL",
             "TABBY_API_HOST",
             "NOUI_ENV_FILE",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
         ):
             os.environ.pop(key, None)
+        os.environ["NOUI_ENV_FILE"] = empty_env
         os.environ.update(env)
         g: dict = {"__file__": os.path.join(tempfile.gettempdir(), "noui_gen_execute_test.py")}
         exec(compile(_generated(), "<generated>", "exec"), g)

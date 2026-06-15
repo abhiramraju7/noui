@@ -5709,8 +5709,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # --- recording (Tabby VNC) ---
-    rec_parser = sub.add_parser("recording", help="Import a Tabby VNC recording into NoUI")
+    rec_parser = sub.add_parser("recording", help="Record login/workflow via a Tabby VNC session")
     rec_sub = rec_parser.add_subparsers(dest="recording_command")
+    rec_start = rec_sub.add_parser(
+        "start", help="Provision a Tabby VNC recording session and print the viewer URL"
+    )
+    rec_start.add_argument("--url", default="", help="Login/start URL to open in the recorded browser")
+    rec_start.add_argument(
+        "--workflow", action="store_true", help="Workflow recording (default: login)"
+    )
+    rec_start.add_argument(
+        "--profile", default="", help="(reserved) existing Tabby profile id for workflow auth"
+    )
     rec_import = rec_sub.add_parser(
         "import", help="Pull a Tabby recording bundle and replay it into NoUI ingestion"
     )
@@ -6085,15 +6095,50 @@ def cmd_recording_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recording_start(args: argparse.Namespace) -> int:
+    """Provision a Tabby VNC recording session and print the viewer URL."""
+    mode = "workflow" if getattr(args, "workflow", False) else "login"
+    from compiler.login.tabby_client import create_recording_session
+
+    print(f"Provisioning {mode} recording session on Tabby …", end=" ", flush=True)
+    try:
+        token = _resolve_agent_token()
+        result = create_recording_session(mode, args.url or "", token, args.profile or "")
+        print(_green("done"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"Provisioning failed: {exc}"))
+        return 1
+
+    assert isinstance(result, dict)
+    session_id = result.get("session_id", "")
+    vnc_url = result.get("vnc_url", "")
+    print()
+    print(_bold("Recording session ready:"))
+    print(f"  Tabby session: {_cyan(session_id)}")
+    print(f"  Mode         : {mode}")
+    print()
+    print(_bold("Open this URL, drive the browser, then click 'Finish & export':"))
+    print(f"  {vnc_url}")
+    print()
+    print(f"  Then run: {_bold(f'noui recording import {session_id}')}")
+    return 0
+
+
 def _dispatch_recording(args: argparse.Namespace) -> int:
     cmd = getattr(args, "recording_command", None)
     if cmd is None:
-        print("Usage: noui recording {import}")
+        print("Usage: noui recording {start,import}")
         return 1
-    if cmd == "import":
-        return cmd_recording_import(args)
-    print(_red(f"Unknown recording subcommand: {cmd}"))
-    return 1
+    dispatch = {
+        "start": cmd_recording_start,
+        "import": cmd_recording_import,
+    }
+    fn = dispatch.get(cmd)
+    if fn is None:
+        print(_red(f"Unknown recording subcommand: {cmd}"))
+        return 1
+    return fn(args)
 
 
 def _dispatch_workflow(args: argparse.Namespace) -> int:

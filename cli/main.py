@@ -4692,10 +4692,16 @@ def _emit_app_template(
                 print(_red("  Template name exists but could not locate it by pattern to update."))
                 return None
             tmpl_id = existing.get("id", "")
+            # Merge additive export_policy fields from the existing template so
+            # the PUT does not clobber extractions/allowlists/cookies/target_urls
+            # accumulated by prior recordings.
+            from compiler.login.tabby_draft_generator import merge_template_export_policy
+
+            merged_payload = merge_template_export_policy(existing, payload)
             print(f"  Updating App Template {_cyan(tmpl_id)} …", end=" ", flush=True)
             try:
                 resp = _tabby_http(
-                    "PUT", f"/admin/app-templates/{tmpl_id}", payload, token=admin_token
+                    "PUT", f"/admin/app-templates/{tmpl_id}", merged_payload, token=admin_token
                 )
                 assert isinstance(resp, dict)
                 print(_green("done"))

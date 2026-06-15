@@ -486,6 +486,52 @@ class TestBuildAppTemplatePayload:
         payload = build_app_template_payload(app, prof)
         assert "execute_enabled" not in payload
 
+    def test_merge_unions_export_policy_additive_fields(self) -> None:
+        from compiler.login.tabby_draft_generator import merge_template_export_policy
+
+        existing = {
+            "export_policy": {
+                "artifact_types": ["cookies", "headers"],
+                "header_allowlist": ["Authorization"],
+                "target_urls": ["https://a.com"],
+                "custom_extractions": [{"key": "aura", "type": "js_eval"}],
+                "credential_types": {"cookies": [{"name": "sid"}], "headers": ["X-Old"]},
+            }
+        }
+        new_payload = {
+            "name": "app",
+            "profile_name_pattern": "app",
+            "login_config": {"steps": [1]},
+            "export_policy": {
+                "artifact_types": ["headers", "csrf_token"],
+                "header_allowlist": ["X-CSRF"],
+                "target_urls": ["https://b.com"],
+                "custom_extractions": [{"key": "csrf", "type": "cookie"}],
+                "credential_types": {"cookies": [{"name": "auth"}], "headers": ["X-New"]},
+            },
+        }
+        out = merge_template_export_policy(existing, new_payload)
+        ep = out["export_policy"]
+        assert set(ep["artifact_types"]) == {"cookies", "headers", "csrf_token"}
+        assert set(ep["header_allowlist"]) == {"Authorization", "X-CSRF"}
+        assert set(ep["target_urls"]) == {"https://a.com", "https://b.com"}
+        keys = {e["key"] for e in ep["custom_extractions"]}
+        assert keys == {"aura", "csrf"}
+        cookie_names = {c["name"] for c in ep["credential_types"]["cookies"]}
+        assert cookie_names == {"sid", "auth"}
+        assert set(ep["credential_types"]["headers"]) == {"X-Old", "X-New"}
+        # Non-additive fields come from the new payload.
+        assert out["login_config"] == {"steps": [1]}
+
+    def test_merge_new_wins_on_key_conflict(self) -> None:
+        from compiler.login.tabby_draft_generator import merge_template_export_policy
+
+        existing = {"export_policy": {"custom_extractions": [{"key": "t", "v": "old"}]}}
+        new_payload = {"export_policy": {"custom_extractions": [{"key": "t", "v": "new"}]}}
+        out = merge_template_export_policy(existing, new_payload)
+        ce = out["export_policy"]["custom_extractions"]
+        assert len(ce) == 1 and ce[0]["v"] == "new"
+
     def test_missing_profile_id_raises(self) -> None:
         app, prof = self._drafts()
         prof = {k: v for k, v in prof.items() if k != "profile_id"}

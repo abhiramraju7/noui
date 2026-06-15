@@ -297,6 +297,72 @@ def build_app_template_payload(
     }
 
 
+def _union_scalars(existing: list | None, new: list | None) -> list:
+    """Union two scalar lists; new entries first, existing ones appended."""
+    out: list = []
+    for src in (new or []), (existing or []):
+        for x in src:
+            if x not in out:
+                out.append(x)
+    return out
+
+
+def _union_by_field(existing: list | None, new: list | None, field: str) -> list:
+    """Union two lists of dicts keyed by ``field``; new wins on key conflict."""
+    out: list = []
+    seen: set = set()
+    for src in (new or []), (existing or []):
+        for item in src:
+            if not isinstance(item, dict):
+                continue
+            key = item.get(field)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def merge_template_export_policy(existing_template: dict, new_payload: dict) -> dict:
+    """Merge additive ``export_policy`` fields from an existing template into a
+    new template payload, so an upsert PUT does not clobber extractions /
+    allowlists / cookie credential_types / target_urls accumulated by prior
+    recordings.
+
+    Additive (unioned): ``custom_extractions`` (by ``key``), ``header_allowlist``,
+    ``request_header_allowlist``, ``target_urls``, ``artifact_types``, and
+    ``credential_types`` (cookies by ``name``, headers as scalars).
+    Everything else (``login_config``, ``keepalive_config``, ...) is taken from
+    the new payload — those are per-login-flow, not additive.
+    """
+    merged = dict(new_payload)
+    old_ep = (existing_template or {}).get("export_policy") or {}
+    new_ep = dict(merged.get("export_policy") or {})
+
+    for key in ("header_allowlist", "request_header_allowlist", "target_urls", "artifact_types"):
+        unioned = _union_scalars(old_ep.get(key), new_ep.get(key))
+        if unioned:
+            new_ep[key] = unioned
+
+    custom = _union_by_field(old_ep.get("custom_extractions"), new_ep.get("custom_extractions"), "key")
+    if custom:
+        new_ep["custom_extractions"] = custom
+
+    old_ct = old_ep.get("credential_types") or {}
+    new_ct = dict(new_ep.get("credential_types") or {})
+    cookies = _union_by_field(old_ct.get("cookies"), new_ct.get("cookies"), "name")
+    headers = _union_scalars(old_ct.get("headers"), new_ct.get("headers"))
+    if cookies:
+        new_ct["cookies"] = cookies
+    if headers:
+        new_ct["headers"] = headers
+    if new_ct:
+        new_ep["credential_types"] = new_ct
+
+    merged["export_policy"] = new_ep
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Core generator
 # ---------------------------------------------------------------------------

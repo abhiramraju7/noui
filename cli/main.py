@@ -55,6 +55,7 @@ import base64
 import getpass
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,6 +106,8 @@ ENV_LOCAL = TABBY_DIR / ".env.local"
 ENV_EXAMPLE = TABBY_DIR / ".env.example"
 
 TABBY_PID_FILE = TABBY_DIR / ".tabby-api.pid"
+TABBY_PF_PID_FILE = TABBY_DIR / ".tabby-portforward.pid"
+TABBY_PF_LOG_FILE = TABBY_DIR / ".tabby-portforward.log"
 TABBY_LOG_FILE = TABBY_DIR / ".tabby-api.log"
 TABBY_WORKER_PID_FILE = TABBY_DIR / ".tabby-worker.pid"
 TABBY_WORKER_LOG_FILE = TABBY_DIR / ".tabby-worker.log"
@@ -4295,6 +4298,95 @@ def cmd_tabby_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tabby_port_forward(args: argparse.Namespace) -> int:
+    """Port-forward a Kind/K8s Tabby API to localhost so the NoUI CLI and the
+    VNC viewer can reach it (the cluster API is ClusterIP-only).
+
+    This is for the K8s deployment (e.g. `make kind-reload-all`), NOT the
+    docker-compose `noui tabby start` path — there the API is already on
+    localhost. The forward is held by a backgrounded `kubectl port-forward`
+    process tracked via a PID file.
+    """
+    namespace = getattr(args, "namespace", None) or "browser-hitl"
+    service = getattr(args, "service", None) or "browser-hitl-api"
+    local_port = getattr(args, "port", None) or 18080
+    remote_port = getattr(args, "remote_port", None) or 8000
+
+    if getattr(args, "stop", False):
+        pid = _read_pid(TABBY_PF_PID_FILE)
+        if pid is None:
+            print(_yellow("No port-forward PID file — nothing to stop."))
+            return 0
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        _clear_pid(TABBY_PF_PID_FILE)
+        print(_green(f"✓ Stopped port-forward (PID {pid})."))
+        return 0
+
+    existing = _read_pid(TABBY_PF_PID_FILE)
+    if existing is not None and _pid_running(existing):
+        print(_yellow(f"Port-forward already running (PID {existing}) → localhost:{local_port}"))
+        return 0
+
+    if not shutil.which("kubectl"):
+        print(_red("kubectl not found in PATH. Install it or run the port-forward manually."))
+        return 1
+    # Preflight: cluster + service reachable.
+    try:
+        subprocess.run(
+            ["kubectl", "get", "svc", service, "-n", namespace],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(_red(f"Service '{service}' not found in namespace '{namespace}':"))
+        print(_red(f"  {exc.stderr.decode(errors='replace').strip()}"))
+        print(_yellow("  Is the Kind stack up? Try: cd tabby && make kind-reload-all"))
+        return 1
+
+    TABBY_PF_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(TABBY_PF_LOG_FILE, "a")  # noqa: SIM115
+    proc = subprocess.Popen(
+        ["kubectl", "port-forward", "-n", namespace, f"svc/{service}", f"{local_port}:{remote_port}"],
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
+    )
+    TABBY_PF_PID_FILE.write_text(str(proc.pid))
+
+    print(
+        f"Port-forwarding {service} → localhost:{local_port} (PID {proc.pid}) …",
+        end="",
+        flush=True,
+    )
+    url = f"http://localhost:{local_port}"
+    for _ in range(20):
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            print()
+            print(_red(f"port-forward exited early (code {proc.returncode}) — see {TABBY_PF_LOG_FILE}"))
+            _clear_pid(TABBY_PF_PID_FILE)
+            return 1
+        try:
+            with urllib.request.urlopen(f"{url}/health/live", timeout=2):
+                break
+        except Exception:
+            continue
+    print(_green(" ✓"))
+    print()
+    print(_bold("Tabby API reachable at:"))
+    print(f"  {_cyan(url)}")
+    print()
+    print(f"  Point NoUI at it:  {_bold(f'export TABBY_API_URL={url}')}")
+    print(f"  Stop it with:      {_bold('noui tabby port-forward --stop')}")
+    return 0
+
+
 def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
     """Configure NoUI for Tabby Cloud via the platform-JWT token-exchange flow.
 
@@ -5808,6 +5900,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--infra", action="store_true", help="Also stop Docker Compose services"
     )
 
+    tabby_pf_p = tabby_sub.add_parser(
+        "port-forward",
+        help="Port-forward the Kind/K8s Tabby API to localhost (for VNC recording)",
+    )
+    tabby_pf_p.add_argument("--namespace", default="browser-hitl", help="K8s namespace")
+    tabby_pf_p.add_argument("--service", default="browser-hitl-api", help="K8s service name")
+    tabby_pf_p.add_argument("--port", type=int, default=18080, help="Local port (default 18080)")
+    tabby_pf_p.add_argument(
+        "--remote-port", type=int, default=8000, help="Service port (default 8000)"
+    )
+    tabby_pf_p.add_argument("--stop", action="store_true", help="Stop the running port-forward")
+
     tabby_setup_p = tabby_sub.add_parser(
         "setup",
         help="Full provisioning: agent client + ServiceProfiles + write .env",
@@ -6271,13 +6375,14 @@ def _dispatch_tabby_template(args: argparse.Namespace) -> int:
 def _dispatch_tabby(args: argparse.Namespace) -> int:
     cmd = getattr(args, "tabby_command", None)
     if cmd is None:
-        print("Usage: noui tabby {status,start,stop,setup,template,session}")
+        print("Usage: noui tabby {status,start,stop,setup,port-forward,template,session}")
         return 1
     dispatch = {
         "status": cmd_tabby_status,
         "start": cmd_tabby_start,
         "stop": cmd_tabby_stop,
         "setup": cmd_tabby_setup,
+        "port-forward": cmd_tabby_port_forward,
         "template": _dispatch_tabby_template,
         "session": _dispatch_tabby_session,
     }

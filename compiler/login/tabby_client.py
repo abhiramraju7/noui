@@ -207,6 +207,26 @@ def get_agent_token(client_id: str, client_secret: str) -> str:
     return token
 
 
+def get_recording_bundle(session_id: str, agent_token: str) -> dict:
+    """
+    GET /recording/sessions/{session_id}/bundle (agent bearer).
+
+    Returns the drained VNC recording bundle (HAR + click_events + url_events)
+    that the worker captured and the API persisted on "Finish & export".
+    Raises RuntimeError if the bundle is missing or the response is malformed.
+    """
+    resp = _tabby_http(
+        "GET",
+        f"/recording/sessions/{session_id}/bundle",
+        token=agent_token,
+    )
+    if not isinstance(resp, dict) or "recording_mode" not in resp:
+        raise RuntimeError(
+            f"GET /recording/sessions/{session_id}/bundle returned an unexpected payload: {resp}"
+        )
+    return resp
+
+
 def request_credentials(profile_slug: str, agent_token: str) -> dict:
     """
     POST /credentials/request using the profile slug (not the DB UUID).

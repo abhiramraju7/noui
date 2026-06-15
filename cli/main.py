@@ -5708,6 +5708,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remove from the project-scoped path instead of the global path",
     )
 
+    # --- recording (Tabby VNC) ---
+    rec_parser = sub.add_parser("recording", help="Import a Tabby VNC recording into NoUI")
+    rec_sub = rec_parser.add_subparsers(dest="recording_command")
+    rec_import = rec_sub.add_parser(
+        "import", help="Pull a Tabby recording bundle and replay it into NoUI ingestion"
+    )
+    rec_import.add_argument("session_id", help="Tabby session id that was recorded")
+    rec_import.add_argument("--name", default="", help="Name for the created NoUI session")
+    rec_import.add_argument("--url", default="", help="Login/start URL for the session")
+
     # --- autopilot ---
     ap_parser = sub.add_parser("autopilot", help="Autopilot recording commands")
     ap_sub = ap_parser.add_subparsers(dest="autopilot_command")
@@ -5952,6 +5962,140 @@ def _dispatch_login(args: argparse.Namespace) -> int:
     return fn(args)
 
 
+def _resolve_agent_token() -> str:
+    """Resolve a Tabby agent bearer token from env or the creds cache."""
+    client_id = os.environ.get("TABBY_CLIENT_ID", "")
+    client_secret = os.environ.get("TABBY_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        cache = _load_cache()
+        client_id = client_id or cache.get("client_id", "")
+        client_secret = client_secret or cache.get("client_secret", "")
+    from compiler.login.tabby_client import get_agent_token
+
+    return get_agent_token(client_id, client_secret)
+
+
+def _upload_har_multipart(session_id: str, session_type: str, har: dict[str, Any]) -> None:
+    """POST a HAR document to the backend as multipart/form-data (field 'file')."""
+    boundary = "----nouiRecordingBoundary"
+    har_bytes = json.dumps(har).encode()
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{session_id}.har"\r\n'
+            "Content-Type: application/json\r\n\r\n"
+        ).encode()
+        + har_bytes
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    url = f"{BACKEND_URL}/sessions/{session_id}/har?session_type={session_type}"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        raise RuntimeError(f"HAR upload failed: HTTP {exc.code}: {body_text}") from exc
+
+
+def cmd_recording_import(args: argparse.Namespace) -> int:
+    """Pull a Tabby VNC recording bundle and replay it into NoUI ingestion."""
+    if not _backend_alive():
+        print(_red(f"NoUI backend not reachable at {BACKEND_URL}"))
+        return 1
+
+    from compiler.login.tabby_client import get_recording_bundle
+    from compiler.recording.bundle_adapter import (
+        click_payloads,
+        count_sensitive_unredacted,
+        har_log,
+        url_payloads,
+        validate_bundle,
+    )
+
+    tabby_session_id: str = args.session_id
+    print(f"Fetching recording bundle from Tabby ({_cyan(tabby_session_id)}) …", end=" ", flush=True)
+    try:
+        token = _resolve_agent_token()
+        bundle = get_recording_bundle(tabby_session_id, token)
+        session_type = validate_bundle(bundle)
+        print(_green("done"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"Fetch failed: {exc}"))
+        return 1
+    except ValueError as exc:
+        print()
+        print(_red(f"Invalid bundle: {exc}"))
+        return 1
+
+    leaks = count_sensitive_unredacted(bundle)
+    if leaks:
+        print(_red(f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."))
+        return 1
+
+    name = args.name or f"recording-{tabby_session_id[:8]}"
+    if session_type == "login":
+        created = _http("POST", "/login-sessions", {"app_name": name, "login_url": args.url or ""})
+    else:
+        created = _http(
+            "POST", "/workflow-sessions", {"name": name, "start_url": args.url or "", "description": ""}
+        )
+    assert isinstance(created, dict)
+    noui_session_id = created["id"]
+
+    clicks = click_payloads(bundle, noui_session_id, session_type)
+    urls = url_payloads(bundle, noui_session_id, session_type)
+    try:
+        for c in clicks:
+            _http("POST", "/clicks", c)
+        for u in urls:
+            _http("POST", "/url-events", u)
+        _upload_har_multipart(noui_session_id, session_type, har_log(bundle))
+    except RuntimeError as exc:
+        print(_red(f"Replay failed: {exc}"))
+        return 1
+
+    # Best-effort completion (endpoint differs per session type).
+    complete_path = (
+        f"/login-sessions/{noui_session_id}/complete"
+        if session_type == "login"
+        else f"/workflow-sessions/{noui_session_id}/complete"
+    )
+    try:
+        _http("POST", complete_path)
+    except RuntimeError:
+        pass
+
+    har_entries = len(har_log(bundle).get("log", {}).get("entries", []))
+    print()
+    print(_bold("Imported recording into NoUI:"))
+    print(f"  NoUI {session_type} session: {_cyan(noui_session_id)}")
+    print(f"  {len(clicks)} interaction(s), {len(urls)} URL transition(s), {har_entries} HAR entry(ies)")
+    print()
+    if session_type == "login":
+        print(f"  Next: {_bold(f'noui login export {noui_session_id}')}")
+    else:
+        print(f"  Next: {_bold(f'noui workflow export {noui_session_id} --as mcp')}")
+    return 0
+
+
+def _dispatch_recording(args: argparse.Namespace) -> int:
+    cmd = getattr(args, "recording_command", None)
+    if cmd is None:
+        print("Usage: noui recording {import}")
+        return 1
+    if cmd == "import":
+        return cmd_recording_import(args)
+    print(_red(f"Unknown recording subcommand: {cmd}"))
+    return 1
+
+
 def _dispatch_workflow(args: argparse.Namespace) -> int:
     cmd = getattr(args, "workflow_command", None)
     if cmd is None:
@@ -6128,6 +6272,7 @@ def main() -> None:
         "skill": _dispatch_skill,
         "autopilot": _dispatch_autopilot,
         "tabby": _dispatch_tabby,
+        "recording": _dispatch_recording,
     }
 
     fn = dispatch.get(args.command)

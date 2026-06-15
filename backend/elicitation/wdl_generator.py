@@ -45,6 +45,7 @@ def generate_wdl(
     narrations: list[dict] | None = None,
     timeline_events: list[dict] | None = None,
     base_url: str = "",
+    profile_slug: str = "",
 ) -> dict:
     """Generate a WDL draft from captured data.
 
@@ -54,6 +55,12 @@ def generate_wdl(
         narrations: Narration dicts for step descriptions.
         timeline_events: Timeline event dicts for ordering context.
         base_url: Base URL to replace with ``{{base_url}}``.
+        profile_slug: Tabby profile slug. When non-empty, REST steps whose
+            host is first-party to the recorded site (same registrable domain as
+            base_url) OR carries a detected auth indicator are routed through
+            Tabby's browser via ``"via": "tabby"`` + ``"tabby_profile_id"``.
+            First-party routing covers cookie-authenticated / anti-bot domains
+            (e.g. Akamai) that expose no Authorization header.
 
     Returns:
         {
@@ -81,6 +88,15 @@ def generate_wdl(
 
     # Phase 2: Detect data dependencies between HAR entries
     dependencies = detect_dependencies(har_entries)
+
+    # Hosts that require Tabby-routed execution (where auth was detected).
+    # Only relevant when a Tabby profile slug is supplied.
+    auth_hosts = _detect_auth_hosts(har_entries) if profile_slug else set()
+
+    # First-party site domain (registrable) of the recorded session. When a
+    # profile is supplied, REST calls to this site are routed through Tabby even
+    # if they authenticate via cookies — anti-bot domains expose no auth header.
+    site_domain = _registrable_domain(urlparse(base_url).netloc) if profile_slug else ""
 
     # Phase 3: Collect form input values for parameterization
     form_values = _collect_form_values(click_events)
@@ -112,6 +128,9 @@ def generate_wdl(
             detected_params,
             step_idx,
             dep_substitutions=dep_substitutions,
+            profile_slug=profile_slug,
+            auth_hosts=auth_hosts,
+            site_domain=site_domain,
         )
 
         # Add description from narration if available
@@ -178,6 +197,47 @@ def _detect_base_url(har_entries: list[dict]) -> str:
     if bases:
         return bases.most_common(1)[0][0]
     return ""
+
+
+def _registrable_domain(host: str) -> str:
+    """Best-effort registrable domain: the last two labels, port stripped.
+
+    Good enough for first-party host matching (``www.expedia.com`` and
+    ``api.expedia.com`` -> ``expedia.com``). Does not handle multi-part public
+    suffixes such as ``.co.uk``; acceptable for v0 routing.
+    """
+    host = host.split(":")[0].strip().lower()
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    return ".".join(parts[-2:])
+
+
+# ── Tabby auth-host detection ─────────────────────────────────────────
+
+
+def _detect_auth_hosts(har_entries: list[dict]) -> set[str]:
+    """Return the set of hosts whose requests carry an auth indicator.
+
+    A host is treated as an "auth domain" (and thus a candidate for
+    Tabby-routed execution) when ``detect_auth_patterns`` finds any auth
+    signal — Authorization header, known API-key header/query param, or a
+    session-like cookie — among that host's requests.
+    """
+    from backend.elicitation.auth_detector import detect_auth_patterns
+
+    by_host: dict[str, list[dict]] = {}
+    for entry in har_entries:
+        url = entry.get("request", {}).get("url", "")
+        host = urlparse(url).netloc
+        if host:
+            by_host.setdefault(host, []).append(entry)
+
+    auth_hosts: set[str] = set()
+    for host, entries in by_host.items():
+        if detect_auth_patterns(entries)["primary_auth"] != "none":
+            auth_hosts.add(host)
+    return auth_hosts
 
 
 # ── Dependency detection ─────────────────────────────────────────────────────
@@ -252,6 +312,9 @@ def _build_rest_step(
     detected_params: dict[str, dict],
     step_idx: int,
     dep_substitutions: dict[str, str] | None = None,
+    profile_slug: str = "",
+    auth_hosts: set[str] | None = None,
+    site_domain: str = "",
 ) -> dict:
     """Build a WDL REST step from a HAR entry."""
     request = entry.get("request", {})
@@ -326,6 +389,16 @@ def _build_rest_step(
 
     if status:
         step["config"]["expected_status"] = status
+
+    # Route through Tabby's browser when a profile is available and the host is
+    # either first-party to the recorded site (covers cookie-auth / anti-bot
+    # domains with no auth header) or carries a detected auth indicator.
+    if profile_slug:
+        host = urlparse(url).netloc
+        first_party = bool(site_domain) and _registrable_domain(host) == site_domain
+        if first_party or (auth_hosts and host in auth_hosts):
+            step["via"] = "tabby"
+            step["tabby_profile_id"] = profile_slug
 
     return step
 

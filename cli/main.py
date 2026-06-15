@@ -1949,22 +1949,45 @@ def cmd_autopilot_stop_capture(args: argparse.Namespace) -> int:
 
     wf_id = args.workflow_session_id
     cs_id = args.capture_session_id
+    tabby_mode = _is_tabby_mode()
+    tabby_entry_count = 0
 
-    # Stop extension capture (HAR upload happens here)
-    print("Stopping extension capture …", end=" ", flush=True)
-    try:
-        _http(
-            "POST",
-            "/browser-commands/execute",
-            {
-                "command_type": "stop_capture_session",
-                "params": {"captureSessionId": cs_id},
-            },
-            timeout=35,
-        )
-        print(_green("done"))
-    except Exception:
-        print(_yellow("skipped (extension not responding)"))
+    if tabby_mode:
+        # Tabby mode: the HAR is buffered in the worker, not the extension. Pull it
+        # via the Tabby stop endpoint (sends har_stop and stores the HAR server-side).
+        print("Stopping Tabby capture (har_stop) …", end=" ", flush=True)
+        try:
+            ids = _http("GET", f"/workflow-sessions/{wf_id}")
+            res = _http(
+                "POST",
+                "/autopilot-recordings/stop-capture",
+                {
+                    "capture_session_id": cs_id,
+                    "project_id": ids.get("project_id") if isinstance(ids, dict) else None,
+                    "process_id": ids.get("process_id") if isinstance(ids, dict) else None,
+                },
+                timeout=120,
+            )
+            tabby_entry_count = int(res.get("entry_count", 0)) if isinstance(res, dict) else 0
+            print(_green(f"done ({tabby_entry_count} HAR entries)"))
+        except Exception as exc:
+            print(_yellow(f"skipped ({exc})"))
+    else:
+        # Extension mode: the extension uploads HAR when capture stops.
+        print("Stopping extension capture …", end=" ", flush=True)
+        try:
+            _http(
+                "POST",
+                "/browser-commands/execute",
+                {
+                    "command_type": "stop_capture_session",
+                    "params": {"captureSessionId": cs_id},
+                },
+                timeout=35,
+            )
+            print(_green("done"))
+        except Exception:
+            print(_yellow("skipped (extension not responding)"))
 
     # Stop capture session in DB (PUT)
     print("Stopping capture session …", end=" ", flush=True)
@@ -1989,27 +2012,34 @@ def cmd_autopilot_stop_capture(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(_yellow(f"skipped ({exc})"))
 
-    # Wait for HAR upload
-    print("Waiting for HAR upload …", end=" ", flush=True)
-    time.sleep(3)
-
-    # Check if HAR exists
+    # Determine HAR presence
     has_har = False
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_URL}/capture-sessions/{cs_id}/har",
-            method="GET",
+    if tabby_mode:
+        # The Tabby stop endpoint stored the HAR synchronously — no upload wait.
+        has_har = tabby_entry_count > 0
+        print(
+            _green(f"HAR captured ({tabby_entry_count:,} entries).")
+            if has_har
+            else _yellow("no HAR captured by the Tabby worker")
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            har_size = len(resp.read())
-            has_har = har_size > 0
-    except Exception:
-        pass
-
-    if has_har:
-        print(_green(f"done ({har_size:,} bytes)"))
     else:
-        print(_yellow("no HAR file found"))
+        # Extension mode: wait for the upload, then check.
+        print("Waiting for HAR upload …", end=" ", flush=True)
+        time.sleep(3)
+        try:
+            req = urllib.request.Request(
+                f"{BACKEND_URL}/capture-sessions/{cs_id}/har",
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                har_size = len(resp.read())
+                has_har = har_size > 0
+        except Exception:
+            pass
+        if has_har:
+            print(_green(f"done ({har_size:,} bytes)"))
+        else:
+            print(_yellow("no HAR file found"))
 
     print()
     if has_har:
@@ -2151,6 +2181,14 @@ def cmd_autopilot_verify_extension(args: argparse.Namespace) -> int:  # noqa: AR
     if not _backend_alive():
         print(_red(f"NoUI backend not reachable at {BACKEND_URL}"))
         return 1
+
+    # Tabby mode has no Chrome extension — the worker serves browser commands via
+    # /execute/browser. Extension verification is not applicable; skip cleanly.
+    if _is_tabby_mode():
+        print(_green("Tabby mode active — no Chrome extension to verify."))
+        print("  Browser commands are served by the Tabby worker via /execute/browser.")
+        print("  Skipping extension preflight.")
+        return 0
 
     # Commands to test — a representative set covering original + agent-friendly commands
     test_commands = [
@@ -5142,6 +5180,12 @@ def cmd_session_ensure(args: argparse.Namespace) -> int:
 
     env = {**os.environ}
     env.update(_load_env_local())
+    # Local workers must expose /execute/* so WDL `via:"tabby"` routing and
+    # autopilot browser commands work. The worker registers those routes only
+    # when EXECUTE_ENABLED=true (in K8s the controller derives this from the
+    # app's execute_enabled). Default it on for local dev; an explicit value
+    # from the environment or .env.local still wins.
+    env.setdefault("EXECUTE_ENABLED", "true")
     env.update(
         {
             "SESSION_ID": session_id,

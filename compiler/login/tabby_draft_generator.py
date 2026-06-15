@@ -21,6 +21,7 @@ Outputs (returned as a dict):
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -290,11 +291,9 @@ def build_app_template_payload(
         "browser_policy": application_draft.get("browser_policy")
         or {"clipboard": False, "downloads": False, "file_chooser": False},
         "notification_config": application_draft.get("notification_config") or {},
-        # execute_enabled mirrors the app draft (A4): auto-provisioned apps default
-        # it to false, which breaks /execute/fetch in real K8s. The template entity
-        # has no field for it today (Tabby change documented in gaps.md A4), but we
-        # emit it so the value is carried the moment Tabby adds the column.
-        "execute_enabled": bool(application_draft.get("execute_enabled", True)),
+        # NOTE: execute_enabled is intentionally NOT emitted — the App Template
+        # DTO rejects the field and returns 400 (A4). The auto-provisioned app
+        # picks up execute_enabled from its own creation path, not the template.
     }
 
 
@@ -303,11 +302,25 @@ def build_app_template_payload(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_auth_mode(auth_mode: str | None) -> str:
+    """Normalize the credential auth mode.
+
+    'platform_jwt' (Scenario A) → per-user, no stored credentials: the runtime
+    escalates to the end-user via HITL (credential_ref 'manual:').
+    'agent_token'  (Scenario B) → service identity stores credentials in a K8s
+    Secret and reuses them (credential_ref 'k8s:secret/...').
+    Defaults to 'agent_token' (the historical behavior) when unset.
+    """
+    mode = (auth_mode or os.environ.get("NOUI_TABBY_AUTH_MODE") or "agent_token").strip().lower()
+    return "platform_jwt" if mode == "platform_jwt" else "agent_token"
+
+
 def generate(
     session: dict,
     click_events: list[dict],
     url_events: list[dict],
     har: dict | None = None,
+    auth_mode: str | None = None,
 ) -> dict[str, Any]:
     """
     Generate an Application draft, ServiceProfile draft, and review items
@@ -326,11 +339,15 @@ def generate(
           - abcd format: metadata_json containing {"url": "...", "from_url": "..."}
     har:
         HAR object (or None)
+    auth_mode:
+        'platform_jwt' (per-user, HITL-supplied creds) or 'agent_token' (stored
+        K8s Secret). Defaults to $NOUI_TABBY_AUTH_MODE, then 'agent_token'.
 
     Returns
     -------
     Full bundle dict.
     """
+    manual_creds = _resolve_auth_mode(auth_mode) == "platform_jwt"
     session_id = session.get("id", "")
     app_name = session.get("app_name") or "recorded-app"
     login_url = session.get("login_url") or ""
@@ -442,23 +459,49 @@ def generate(
             )
 
         if field_role == "username":
-            steps.append(
-                {
-                    "action": "fill",
-                    "selector": selector,
-                    "value": "${USERNAME}",
-                }
-            )
+            if manual_creds:
+                # Per-user: the end-user supplies their own username/email live.
+                steps.append(
+                    {
+                        "action": "request_human_input",
+                        "input_type": "email",
+                        "field_selector": selector,
+                        "label": "Enter your username or email",
+                        "timeout_ms": 120000,
+                    }
+                )
+            else:
+                steps.append(
+                    {
+                        "action": "fill",
+                        "selector": selector,
+                        "value": "${USERNAME}",
+                    }
+                )
         elif field_role == "password":
             password_selector = selector
-            steps.append(
-                {
-                    "action": "fill",
-                    "selector": selector,
-                    "value": "${PASSWORD}",
-                    "sensitive": True,
-                }
-            )
+            if manual_creds:
+                # Per-user: the end-user supplies their own password live; nothing
+                # is stored. sensitive=true suppresses screenshots of this step.
+                steps.append(
+                    {
+                        "action": "request_human_input",
+                        "input_type": "password",
+                        "field_selector": selector,
+                        "label": "Enter your password",
+                        "sensitive": True,
+                        "timeout_ms": 120000,
+                    }
+                )
+            else:
+                steps.append(
+                    {
+                        "action": "fill",
+                        "selector": selector,
+                        "value": "${PASSWORD}",
+                        "sensitive": True,
+                    }
+                )
         elif field_role == "otp":
             has_otp = True
             otp_selector = selector
@@ -579,8 +622,11 @@ def generate(
         )
 
     # ---- Build credential_ref ----
+    # Scenario A (platform_jwt): 'manual:' — no stored credentials; the recorded
+    # request_human_input steps escalate to the end-user at session creation.
+    # Scenario B (agent_token): a K8s Secret holds reusable service credentials.
     secret_name = f"tabby-{profile_id}"
-    credential_ref = f"k8s:secret/{secret_name}"
+    credential_ref = "manual:" if manual_creds else f"k8s:secret/{secret_name}"
 
     # ---- Build login_config ----
     login_config: dict[str, Any] = {

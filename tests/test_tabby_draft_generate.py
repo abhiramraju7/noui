@@ -130,6 +130,40 @@ class TestGenerate:
         pw_steps = [s for s in steps if s.get("value") == "${PASSWORD}"]
         assert all(s.get("sensitive") is True for s in pw_steps)
 
+    def test_agent_mode_default_uses_k8s_secret(self) -> None:
+        clicks = [_click(event_type="input", field_role="username", value="alice")]
+        result = generate(_session(), clicks, [])
+        cref = result["application_draft"]["login_config"]["credential_ref"]
+        assert cref.startswith("k8s:secret/")
+
+    def test_platform_mode_uses_manual_credential_ref(self) -> None:
+        clicks = [_click(event_type="input", field_role="username", value="alice")]
+        result = generate(_session(), clicks, [], auth_mode="platform_jwt")
+        cref = result["application_draft"]["login_config"]["credential_ref"]
+        assert cref == "manual:"
+
+    def test_platform_mode_emits_human_input_for_credentials(self) -> None:
+        clicks = [
+            _click(event_type="input", field_role="username", value="alice"),
+            _click(
+                event_type="input",
+                field_role="password",
+                input_type="password",
+                value="s",
+                element_id="password-input",
+                field_name="password",
+            ),
+        ]
+        result = generate(_session(), clicks, [], auth_mode="platform_jwt")
+        steps = self._steps(result)
+        hi = [s for s in steps if s.get("action") == "request_human_input"]
+        kinds = {s.get("input_type") for s in hi}
+        assert "email" in kinds and "password" in kinds
+        # No stored-credential placeholders in platform mode.
+        assert not [s for s in steps if s.get("value") in ("${USERNAME}", "${PASSWORD}")]
+        pw = [s for s in hi if s.get("input_type") == "password"]
+        assert all(s.get("sensitive") is True for s in pw)
+
     def test_click_step_generated(self) -> None:
         clicks = [
             {
@@ -439,16 +473,18 @@ class TestBuildAppTemplatePayload:
         assert payload["export_policy"]["credential_types"] == prof["credential_types"]
         assert payload["export_policy"]["target_domains"] == ["app.example.com"]
 
-    def test_execute_enabled_true_by_default(self) -> None:
+    def test_execute_enabled_omitted_from_template(self) -> None:
+        # A4: the App Template DTO rejects execute_enabled (400). It must NOT be
+        # emitted; the auto-provisioned app sets it on its own creation path.
         app, prof = self._drafts()
         payload = build_app_template_payload(app, prof)
-        assert payload["execute_enabled"] is True
+        assert "execute_enabled" not in payload
 
-    def test_execute_enabled_mirrors_app_draft(self) -> None:
+    def test_execute_enabled_omitted_even_when_app_sets_it(self) -> None:
         app, prof = self._drafts()
-        app = {**app, "execute_enabled": False}
+        app = {**app, "execute_enabled": True}
         payload = build_app_template_payload(app, prof)
-        assert payload["execute_enabled"] is False
+        assert "execute_enabled" not in payload
 
     def test_missing_profile_id_raises(self) -> None:
         app, prof = self._drafts()

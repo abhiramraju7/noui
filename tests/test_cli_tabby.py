@@ -389,7 +389,8 @@ class TestTabbySetupCloud:
         # POSTed with the exchanged (federated) Tabby JWT, not the platform JWT.
         assert seen["auth"] == "Bearer TABBY_JWT"
         assert seen["body"]["profile_name_pattern"] == "my-app"
-        assert seen["body"]["execute_enabled"] is True
+        # execute_enabled is intentionally stripped — the App Template DTO rejects it (A4).
+        assert "execute_enabled" not in seen["body"]
         assert "tmpl-cloud-1" in capsys.readouterr().out
 
     def test_template_conflict_is_tolerated(
@@ -511,7 +512,8 @@ class TestTabbyTemplateCreate:
         assert posted["profile_name_pattern"] == "my-app"
         # credential_types folded into export_policy for autoProvisionFromTemplate.
         assert posted["export_policy"]["credential_types"]["cookies"][0]["name"] == "sid"
-        assert posted["execute_enabled"] is True
+        # execute_enabled is intentionally stripped — the App Template DTO rejects it (A4).
+        assert "execute_enabled" not in posted
         out = capsys.readouterr().out
         assert "tmpl-uuid-1" in out
 

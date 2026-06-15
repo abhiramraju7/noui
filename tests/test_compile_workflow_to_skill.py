@@ -446,9 +446,7 @@ class TestSkillHarnessExecutionMode:
     """execution_mode='harness' ships recipes, never transport code."""
 
     def test_tree_has_no_transport_code(self) -> None:
-        out, _ = _compile(
-            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
-        )
+        out, _ = _compile(_cookie_auth_har(), profile_slug="example", execution_mode="harness")
         assert (out / "SKILL.md").is_file()
         assert (out / "manifest.json").is_file()
         assert (out / "API.md").is_file()
@@ -497,9 +495,7 @@ class TestSkillHarnessExecutionMode:
         assert any(p["name"] == "id" for p in recipe["query_params"])
 
     def test_manifest_harness_fields(self) -> None:
-        _, manifest = _compile(
-            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
-        )
+        _, manifest = _compile(_cookie_auth_har(), profile_slug="example", execution_mode="harness")
         assert manifest["auth"]["execution_strategy"] == "harness_call_web_api"
         assert manifest["runtime"]["type"] == "agent-harness-skill"
         assert manifest["runtime"]["operation_style"] == "call_web_api"
@@ -551,9 +547,7 @@ class TestSkillHarnessExecutionMode:
             ],
             response_headers=[{"name": "Set-Cookie", "value": "session=abc; Path=/"}],
         )
-        out, _ = _compile(
-            _har([entry]), profile_slug="example", execution_mode="harness"
-        )
+        out, _ = _compile(_har([entry]), profile_slug="example", execution_mode="harness")
         recipe = json.loads((out / "operations.json").read_text())["operations"][0]
         headers = recipe.get("headers", {})
         assert "Accept" in headers

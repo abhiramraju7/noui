@@ -148,9 +148,7 @@ def compile_workflow_to_skill(
     # static-secret-header workflow emits ${SECRET:name} placeholders that the
     # harness resolves server-side (gap G1). Record which secrets an admin must
     # configure in the harness secret store.
-    harness_secrets_required = (
-        secret_names(auth_plan) if execution_mode == "harness" else []
-    )
+    harness_secrets_required = secret_names(auth_plan) if execution_mode == "harness" else []
 
     # 3. noui_runtime/auth.py (shared template, identical bytes for both outputs).
     # Harness mode emits no runtime: operations execute via the harness
@@ -212,7 +210,10 @@ def compile_workflow_to_skill(
                 **(
                     {"module": f"operations/{td['name']}.py", "entry": "execute"}
                     if execution_mode != "harness"
-                    else {"recipe": "operations.json", "tool": "call_web_api" if effective_slug else "bash"}
+                    else {
+                        "recipe": "operations.json",
+                        "tool": "call_web_api" if effective_slug else "bash",
+                    }
                 ),
                 "method": td["method"],
                 "path": td["path"],
@@ -300,6 +301,7 @@ def compile_workflow_to_skill(
 
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
+    execution_strategy: str | None
     if execution_mode == "tabby":
         execution_strategy = "tabby_execute_fetch"
     elif execution_mode == "harness":

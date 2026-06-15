@@ -1620,6 +1620,10 @@ def cmd_workflow_export(args: argparse.Namespace) -> int:
         print(_red(f"Invalid --as {target!r}. Expected 'mcp', 'skill', or 'both'."))
         return 2
 
+    if execution_mode == "harness" and target != "skill":
+        print(_red("--execution-mode harness is skill-only. Use --as skill."))
+        return 2
+
     from urllib.parse import quote_plus
 
     params: list[str] = [f"as={target}", f"execution_mode={execution_mode}"]
@@ -5579,11 +5583,12 @@ def _build_parser() -> argparse.ArgumentParser:
     wf_export.add_argument(
         "--execution-mode",
         default="tabby",
-        choices=["tabby", "http"],
+        choices=["tabby", "http", "harness"],
         dest="execution_mode",
         help=(
-            "Execution strategy: 'tabby' (default, runs inside Tabby's browser) "
-            "or 'http' (legacy httpx + resolve_auth)"
+            "Execution strategy: 'tabby' (default, runs inside Tabby's browser), "
+            "'http' (legacy httpx + resolve_auth), or 'harness' (skill-only — "
+            "call_web_api operation cards for the Adopt Agent Harness)"
         ),
     )
 

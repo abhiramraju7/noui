@@ -17,6 +17,16 @@ Output tree:
         operations/
             __init__.py
             <op>.py             (one standalone CLI script per tool)
+
+With execution_mode="harness" the tree carries no transport code at all
+(the Agent Harness sandbox must never call Tabby directly):
+
+    <output_dir>/
+        SKILL.md                (call_web_api operation cards)
+        manifest.json
+        API.md
+        operations.json         (machine-readable request recipes)
+        auth_plan.json          (when auth is required)
 """
 
 from __future__ import annotations
@@ -31,10 +41,15 @@ from compiler.mcp.auth_plan import generate_auth_plan
 from compiler.mcp.har_to_tools import har_to_tool_defs
 from compiler.runtime.auth_adapter import generate_auth_adapter
 from compiler.runtime.execute_adapter import generate_execute_adapter
+from compiler.skill.harness_md_generator import (
+    render_harness_skill_md,
+    render_operations_json,
+    secret_names,
+)
 from compiler.skill.operation_generator import render_skill_operation
 from compiler.skill.skill_md_generator import render_skill_md
 
-_VALID_EXECUTION_MODES = ("tabby", "http")
+_VALID_EXECUTION_MODES = ("tabby", "http", "harness")
 
 
 def compile_workflow_to_skill(
@@ -129,51 +144,77 @@ def compile_workflow_to_skill(
             app_slug=app_slug,
         )
 
-    # 3. noui_runtime/auth.py (shared template, identical bytes for both outputs)
-    runtime_dir = out_path / "noui_runtime"
-    runtime_dir.mkdir(exist_ok=True)
-    (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
-    (runtime_dir / "auth.py").write_text(
-        generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
-    )
-    if execution_mode == "tabby":
-        (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
+    # Harness mode ships no transport code and never holds the secret value: a
+    # static-secret-header workflow emits ${SECRET:name} placeholders that the
+    # harness resolves server-side (gap G1). Record which secrets an admin must
+    # configure in the harness secret store.
+    harness_secrets_required = secret_names(auth_plan) if execution_mode == "harness" else []
+
+    # 3. noui_runtime/auth.py (shared template, identical bytes for both outputs).
+    # Harness mode emits no runtime: operations execute via the harness
+    # `call_web_api` tool (or plain curl), not via shipped Python transport.
+    if execution_mode != "harness":
+        runtime_dir = out_path / "noui_runtime"
+        runtime_dir.mkdir(exist_ok=True)
+        (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
+        (runtime_dir / "auth.py").write_text(
+            generate_auth_adapter(_settings.tabby_api_host), encoding="utf-8"
+        )
+        if execution_mode == "tabby":
+            (runtime_dir / "execute.py").write_text(generate_execute_adapter(), encoding="utf-8")
 
     # 4. pyproject.toml + .python-version — per-skill Python environment (retro D1).
     # Needs httpx for any execution mode (execute endpoint or direct HTTP).
-    pyproject_deps = ['"httpx>=0.27"']
-    pyproject_toml = (
-        f"[project]\n"
-        f'name = "{skill_id}"\n'
-        f'version = "0.1.0"\n'
-        f'description = "NoUI-generated skill for {app_name}."\n'
-        f'requires-python = ">=3.11"\n'
-        f"dependencies = [\n" + "".join(f"    {d},\n" for d in pyproject_deps) + "]\n"
-        "\n"
-        "[tool.uv]\n"
-        "package = false\n"
-    )
-    (out_path / "pyproject.toml").write_text(pyproject_toml, encoding="utf-8")
-    (out_path / ".python-version").write_text("3.11\n", encoding="utf-8")
+    # Harness skills have no Python environment at all (nothing to run).
+    if execution_mode != "harness":
+        pyproject_deps = ['"httpx>=0.27"']
+        pyproject_toml = (
+            f"[project]\n"
+            f'name = "{skill_id}"\n'
+            f'version = "0.1.0"\n'
+            f'description = "NoUI-generated skill for {app_name}."\n'
+            f'requires-python = ">=3.11"\n'
+            f"dependencies = [\n" + "".join(f"    {d},\n" for d in pyproject_deps) + "]\n"
+            "\n"
+            "[tool.uv]\n"
+            "package = false\n"
+        )
+        (out_path / "pyproject.toml").write_text(pyproject_toml, encoding="utf-8")
+        (out_path / ".python-version").write_text("3.11\n", encoding="utf-8")
 
-    # 5. operations/*.py (skill-specific rendering with CLI wrapper)
-    ops_dir = out_path / "operations"
-    ops_dir.mkdir(exist_ok=True)
-    (ops_dir / "__init__.py").write_text("", encoding="utf-8")
-
+    # 5. operations/*.py (skill-specific rendering with CLI wrapper) — or, in
+    # harness mode, operations.json (machine-readable call_web_api recipes).
     op_files: list[str] = []
     op_entries: list[dict] = []
+    if execution_mode == "harness":
+        (out_path / "operations.json").write_text(
+            render_operations_json(tool_defs, profile_slug=effective_slug, auth_plan=auth_plan),
+            encoding="utf-8",
+        )
+        op_files.append("operations.json")
+    else:
+        ops_dir = out_path / "operations"
+        ops_dir.mkdir(exist_ok=True)
+        (ops_dir / "__init__.py").write_text("", encoding="utf-8")
+
     for td in tool_defs:
-        op_src = render_skill_operation(td, auth_plan=auth_plan, execution_mode=execution_mode)
-        op_file = ops_dir / f"{td['name']}.py"
-        op_file.write_text(op_src, encoding="utf-8")
-        op_files.append(f"operations/{td['name']}.py")
+        if execution_mode != "harness":
+            op_src = render_skill_operation(td, auth_plan=auth_plan, execution_mode=execution_mode)
+            op_file = ops_dir / f"{td['name']}.py"
+            op_file.write_text(op_src, encoding="utf-8")
+            op_files.append(f"operations/{td['name']}.py")
         op_entries.append(
             {
                 "name": td["name"],
                 "description": td.get("description", td["name"]),
-                "module": f"operations/{td['name']}.py",
-                "entry": "execute",
+                **(
+                    {"module": f"operations/{td['name']}.py", "entry": "execute"}
+                    if execution_mode != "harness"
+                    else {
+                        "recipe": "operations.json",
+                        "tool": "call_web_api" if effective_slug else "bash",
+                    }
+                ),
                 "method": td["method"],
                 "path": td["path"],
                 "args": [
@@ -193,17 +234,28 @@ def compile_workflow_to_skill(
         )
 
     # 6. SKILL.md (frontmatter + body — what Claude loads when intent matches)
-    skill_md = render_skill_md(
-        skill_id=skill_id,
-        app_name=app_name,
-        app_slug=app_slug,
-        workflow_name=session_name,
-        tool_defs=tool_defs,
-        auth_plan=auth_plan,
-        profile_slug=effective_slug,
-        description_override=description_override,
-        python_executable=".venv/bin/python",
-    )
+    if execution_mode == "harness":
+        skill_md = render_harness_skill_md(
+            skill_id=skill_id,
+            app_name=app_name,
+            workflow_name=session_name,
+            tool_defs=tool_defs,
+            auth_plan=auth_plan,
+            profile_slug=effective_slug,
+            description_override=description_override,
+        )
+    else:
+        skill_md = render_skill_md(
+            skill_id=skill_id,
+            app_name=app_name,
+            app_slug=app_slug,
+            workflow_name=session_name,
+            tool_defs=tool_defs,
+            auth_plan=auth_plan,
+            profile_slug=effective_slug,
+            description_override=description_override,
+            python_executable=".venv/bin/python",
+        )
     (out_path / "SKILL.md").write_text(skill_md, encoding="utf-8")
 
     # 6. API.md (reuse MCP generator — format-identical)
@@ -229,26 +281,33 @@ def compile_workflow_to_skill(
         )
 
     # 9. manifest.json
-    all_files = [
-        "SKILL.md",
-        "API.md",
-        "pyproject.toml",
-        ".python-version",
-        "noui_runtime/__init__.py",
-        "noui_runtime/auth.py",
-        "operations/__init__.py",
-        *op_files,
-    ]
-    if execution_mode == "tabby":
-        all_files.append("noui_runtime/execute.py")
+    if execution_mode == "harness":
+        all_files = ["SKILL.md", "API.md", *op_files]
+    else:
+        all_files = [
+            "SKILL.md",
+            "API.md",
+            "pyproject.toml",
+            ".python-version",
+            "noui_runtime/__init__.py",
+            "noui_runtime/auth.py",
+            "operations/__init__.py",
+            *op_files,
+        ]
+        if execution_mode == "tabby":
+            all_files.append("noui_runtime/execute.py")
     if auth_plan:
         all_files.append("auth_plan.json")
 
     auth_strategy = auth_plan.get("strategy", "") if auth_plan else ""
     resolved_auth_strategy = auth_strategy or ("tabby_credentials" if has_auth else None)
-    execution_strategy = (
-        "tabby_execute_fetch" if execution_mode == "tabby" else resolved_auth_strategy
-    )
+    execution_strategy: str | None
+    if execution_mode == "tabby":
+        execution_strategy = "tabby_execute_fetch"
+    elif execution_mode == "harness":
+        execution_strategy = "harness_call_web_api"
+    else:
+        execution_strategy = resolved_auth_strategy
 
     manifest: dict = {
         "schema_version": "1",
@@ -271,13 +330,21 @@ def compile_workflow_to_skill(
             "execution_strategy": execution_strategy,
             "auth_plan_file": "auth_plan.json" if auth_plan else None,
         },
-        "runtime": {
-            "type": "claude-code-skill",
-            "entrypoint": "SKILL.md",
-            "operation_style": "subprocess-cli",
-            "python": ">=3.11",
-            "python_executable": ".venv/bin/python",
-        },
+        "runtime": (
+            {
+                "type": "agent-harness-skill",
+                "entrypoint": "SKILL.md",
+                "operation_style": "call_web_api",
+            }
+            if execution_mode == "harness"
+            else {
+                "type": "claude-code-skill",
+                "entrypoint": "SKILL.md",
+                "operation_style": "subprocess-cli",
+                "python": ">=3.11",
+                "python_executable": ".venv/bin/python",
+            }
+        ),
         "operations": op_entries,
         "artifacts": {
             "skill_file": "SKILL.md",
@@ -289,6 +356,7 @@ def compile_workflow_to_skill(
             "generator": "noui",
             "generator_version": "v1-skill",
         },
+        **({"secrets_required": harness_secrets_required} if harness_secrets_required else {}),
     }
 
     (out_path / "manifest.json").write_text(

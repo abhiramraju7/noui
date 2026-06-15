@@ -297,7 +297,9 @@ async def export_workflow(
         "tabby",
         description=(
             "Execution strategy: 'tabby' (default — operations run inside Tabby's "
-            "browser via the /execute/fetch endpoint) or 'http' (legacy httpx + resolve_auth)."
+            "browser via the /execute/fetch endpoint), 'http' (legacy httpx + "
+            "resolve_auth), or 'harness' (skill-only — emits call_web_api operation "
+            "cards for the Adopt Agent Harness, no transport code)."
         ),
     ),
     db: AsyncSession = Depends(get_db),
@@ -316,10 +318,21 @@ async def export_workflow(
             status_code=422,
             detail=f"Invalid `as` value {target!r}. Expected 'mcp', 'skill', or 'both'.",
         )
-    if execution_mode not in ("tabby", "http"):
+    if execution_mode not in ("tabby", "http", "harness"):
         raise HTTPException(
             status_code=422,
-            detail=(f"Invalid execution_mode {execution_mode!r}. Expected 'tabby' or 'http'."),
+            detail=(
+                f"Invalid execution_mode {execution_mode!r}. "
+                f"Expected 'tabby', 'http', or 'harness'."
+            ),
+        )
+    if execution_mode == "harness" and target != "skill":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "execution_mode='harness' is skill-only — the Agent Harness consumes "
+                "skills, not MCP servers. Use `as=skill`."
+            ),
         )
 
     session, app_slug, har, click_dicts, url_dicts = await _load_compile_inputs(

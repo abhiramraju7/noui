@@ -427,6 +427,147 @@ class TestSkillExecutionModeValidation:
 
 
 # ---------------------------------------------------------------------------
+# Execution mode — harness (Agent Harness target, no transport code)
+# ---------------------------------------------------------------------------
+
+
+def _cookie_auth_har() -> dict:
+    """HAR whose auth signal is session cookies → tabby_credentials strategy."""
+    entry = _entry(
+        "https://api.example.com/v1/widgets?id=1",
+        request_headers=[{"name": "Cookie", "value": "session=abc"}],
+        response_headers=[{"name": "Set-Cookie", "value": "session=abc; Path=/"}],
+    )
+    entry["request"]["queryString"] = [{"name": "id", "value": "1"}]
+    return _har([entry])
+
+
+class TestSkillHarnessExecutionMode:
+    """execution_mode='harness' ships recipes, never transport code."""
+
+    def test_tree_has_no_transport_code(self) -> None:
+        out, _ = _compile(_cookie_auth_har(), profile_slug="example", execution_mode="harness")
+        assert (out / "SKILL.md").is_file()
+        assert (out / "manifest.json").is_file()
+        assert (out / "API.md").is_file()
+        assert (out / "operations.json").is_file()
+        assert (out / "auth_plan.json").is_file()
+        # The whole point: nothing executable, no Python environment.
+        assert not (out / "noui_runtime").exists()
+        assert not (out / "operations").exists()
+        assert not (out / "pyproject.toml").exists()
+        assert not (out / ".python-version").exists()
+
+    def test_skill_md_renders_call_web_api_cards(self) -> None:
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        body = (out / "SKILL.md").read_text()
+        assert "call_web_api" in body
+        assert '"app": "example"' in body
+        for op in manifest["operations"]:
+            assert f"### `{op['name']}`" in body
+        # No venv/script mechanics may leak into a harness skill.
+        assert ".venv" not in body
+        assert "uv sync" not in body
+        assert "operations/" not in body
+
+    def test_unauth_skill_md_renders_curl_cards(self) -> None:
+        out, _ = _compile(
+            _har([_entry("https://api.example.com/v1/widgets?id=1")]),
+            execution_mode="harness",
+        )
+        body = (out / "SKILL.md").read_text()
+        assert "curl" in body
+        assert '"app"' not in body
+
+    def test_operations_json_recipes(self) -> None:
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        recipes = json.loads((out / "operations.json").read_text())["operations"]
+        assert len(recipes) == len(manifest["operations"])
+        recipe = recipes[0]
+        assert recipe["tool"] == "call_web_api"
+        assert recipe["app"] == "example"
+        assert recipe["url_template"].startswith("https://api.example.com")
+        assert recipe["method"] == "GET"
+        assert any(p["name"] == "id" for p in recipe["query_params"])
+
+    def test_manifest_harness_fields(self) -> None:
+        _, manifest = _compile(_cookie_auth_har(), profile_slug="example", execution_mode="harness")
+        assert manifest["auth"]["execution_strategy"] == "harness_call_web_api"
+        assert manifest["runtime"]["type"] == "agent-harness-skill"
+        assert manifest["runtime"]["operation_style"] == "call_web_api"
+        assert "python_executable" not in manifest["runtime"]
+        op = manifest["operations"][0]
+        assert op["recipe"] == "operations.json"
+        assert op["tool"] == "call_web_api"
+        assert "module" not in op
+
+    def test_static_secret_header_emits_secret_placeholder(self) -> None:
+        """G1 closed: a static-API-key workflow emits a ${SECRET:name} placeholder
+        the harness resolves server-side — the real key never appears."""
+        har = _har(
+            [
+                _entry(
+                    "https://api.example.com/v1/widgets",
+                    request_headers=[{"name": "Authorization", "value": "Bearer SUPERSECRET"}],
+                )
+            ]
+        )
+        out, manifest = _compile(har, profile_slug="example", execution_mode="harness")
+        recipe = json.loads((out / "operations.json").read_text())["operations"][0]
+        auth = recipe["headers"]["Authorization"]
+        assert auth.startswith("Bearer ${SECRET:")
+        assert auth.endswith("}")
+        # The recorded secret value must NOT leak anywhere in the skill.
+        assert "SUPERSECRET" not in (out / "operations.json").read_text()
+        assert "SUPERSECRET" not in (out / "SKILL.md").read_text()
+        # The manifest records which secrets an admin must configure.
+        assert manifest["secrets_required"]
+        secret = manifest["secrets_required"][0]
+        assert f"${{SECRET:{secret}}}" in (out / "operations.json").read_text()
+        # SKILL.md guides the agent to pass the placeholder, not a real key.
+        body = (out / "SKILL.md").read_text()
+        assert "${SECRET:" in body
+        assert "never a real key" in body
+
+    def test_browser_managed_headers_dropped_from_recipes(self) -> None:
+        """call_web_api runs in a real browser — recorded fingerprint headers are noise."""
+        entry = _entry(
+            "https://api.example.com/v1/widgets",
+            request_headers=[
+                {"name": "User-Agent", "value": "Mozilla/5.0"},
+                {"name": "sec-ch-ua-platform", "value": '"Linux"'},
+                {"name": "Sec-Fetch-Mode", "value": "cors"},
+                {"name": "Cookie", "value": "session=abc"},
+                {"name": "Accept", "value": "application/json"},
+                {"name": "X-Custom-Token", "value": "keep-me"},
+            ],
+            response_headers=[{"name": "Set-Cookie", "value": "session=abc; Path=/"}],
+        )
+        out, _ = _compile(_har([entry]), profile_slug="example", execution_mode="harness")
+        recipe = json.loads((out / "operations.json").read_text())["operations"][0]
+        headers = recipe.get("headers", {})
+        assert "Accept" in headers
+        assert "X-Custom-Token" in headers
+        assert "User-Agent" not in headers
+        assert "sec-ch-ua-platform" not in headers
+        assert "Sec-Fetch-Mode" not in headers
+        assert "Cookie" not in headers
+
+    def test_cookie_auth_needs_no_secrets(self) -> None:
+        """Cookie-auth (tabby_credentials) skills carry no ${SECRET} placeholder —
+        the browser session supplies the cookies, nothing to configure."""
+        out, manifest = _compile(
+            _cookie_auth_har(), profile_slug="example", execution_mode="harness"
+        )
+        assert "secrets_required" not in manifest
+        assert "${SECRET:" not in (out / "operations.json").read_text()
+
+
+# ---------------------------------------------------------------------------
 # Empty / non-API HARs must be rejected at the same layer as the MCP compiler
 # ---------------------------------------------------------------------------
 

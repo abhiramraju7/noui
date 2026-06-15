@@ -153,6 +153,19 @@ _API_CONTENT_TYPES = {
 
 _SKIP_STATUS = {0, 204, 301, 302, 303, 307, 308}
 
+# Response content types that indicate a downloadable document/file (not a
+# static asset — those are caught by _SKIP_EXTENSIONS). Kept as operations
+# because the harness can stream binary results into the sandbox (gap G2).
+_DOWNLOAD_CONTENT_TYPES = (
+    "application/pdf",
+    "application/zip",
+    "application/octet-stream",
+    "application/msword",
+    "application/vnd.openxmlformats",
+    "application/vnd.ms-",
+    "text/csv",
+)
+
 
 def _is_api_call(entry: dict) -> bool:
     req = entry.get("request", {})
@@ -181,6 +194,13 @@ def _is_api_call(entry: dict) -> bool:
     # Accept if the response content looks like API data
     resp_mime = resp.get("content", {}).get("mimeType", "").lower()
     if any(t in resp_mime for t in ("json", "xml", "form-urlencoded", "text/plain")):
+        return True
+
+    # Accept document/file downloads. These are real API operations (e.g. a
+    # statement PDF at /documents/{id}); static assets are already filtered by
+    # _SKIP_EXTENSIONS above. The harness streams binary results into the
+    # sandbox (gap G2), so such endpoints are usable, not just noise.
+    if any(t in resp_mime for t in _DOWNLOAD_CONTENT_TYPES):
         return True
 
     # Accept if the request body looks like API data

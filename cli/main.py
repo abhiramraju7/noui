@@ -3806,9 +3806,15 @@ def _kube_postgres_pod() -> tuple[str, str] | None:
     try:
         out = subprocess.run(
             [
-                "kubectl", "get", "pods", "-n", namespace,
-                "-l", "app.kubernetes.io/component=postgres",
-                "-o", "jsonpath={.items[0].metadata.name}",
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                namespace,
+                "-l",
+                "app.kubernetes.io/component=postgres",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
             ],
             capture_output=True,
             text=True,
@@ -3833,14 +3839,35 @@ def _bypass_canary_gate(profile_db_id: str) -> bool:
     if kube is not None:
         namespace, pod = kube
         cmd = [
-            "kubectl", "exec", "-n", namespace, pod, "--",
-            "psql", "-U", "browser_hitl", "-d", "browser_hitl", "-c", sql,
+            "kubectl",
+            "exec",
+            "-n",
+            namespace,
+            pod,
+            "--",
+            "psql",
+            "-U",
+            "browser_hitl",
+            "-d",
+            "browser_hitl",
+            "-c",
+            sql,
         ]
         cwd = None
     else:
         cmd = [
-            "docker", "compose", "exec", "-T", "postgres",
-            "psql", "-U", "browser_hitl", "-d", "browser_hitl", "-c", sql,
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "browser_hitl",
+            "-d",
+            "browser_hitl",
+            "-c",
+            sql,
         ]
         cwd = str(TABBY_DIR)
     try:
@@ -4377,7 +4404,14 @@ def cmd_tabby_port_forward(args: argparse.Namespace) -> int:
     TABBY_PF_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(TABBY_PF_LOG_FILE, "a")  # noqa: SIM115
     proc = subprocess.Popen(
-        ["kubectl", "port-forward", "-n", namespace, f"svc/{service}", f"{local_port}:{remote_port}"],
+        [
+            "kubectl",
+            "port-forward",
+            "-n",
+            namespace,
+            f"svc/{service}",
+            f"{local_port}:{remote_port}",
+        ],
         stdout=log_fh,
         stderr=log_fh,
         start_new_session=True,
@@ -4394,7 +4428,11 @@ def cmd_tabby_port_forward(args: argparse.Namespace) -> int:
         time.sleep(0.5)
         if proc.poll() is not None:
             print()
-            print(_red(f"port-forward exited early (code {proc.returncode}) — see {TABBY_PF_LOG_FILE}"))
+            print(
+                _red(
+                    f"port-forward exited early (code {proc.returncode}) — see {TABBY_PF_LOG_FILE}"
+                )
+            )
             _clear_pid(TABBY_PF_PID_FILE)
             return 1
         try:
@@ -5837,7 +5875,9 @@ def _build_parser() -> argparse.ArgumentParser:
     rec_start = rec_sub.add_parser(
         "start", help="Provision a Tabby VNC recording session and print the viewer URL"
     )
-    rec_start.add_argument("--url", default="", help="Login/start URL to open in the recorded browser")
+    rec_start.add_argument(
+        "--url", default="", help="Login/start URL to open in the recorded browser"
+    )
     rec_start.add_argument(
         "--workflow", action="store_true", help="Workflow recording (default: login)"
     )
@@ -5852,11 +5892,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "browser starts authenticated — session reuse, no stored credentials",
     )
     rec_import = rec_sub.add_parser(
-        "import", help="Pull a Tabby recording bundle, compile it, and register the Tabby App + ServiceProfile"
+        "import",
+        help="Pull a Tabby recording bundle, compile it, and register the Tabby App + ServiceProfile",
     )
     rec_import.add_argument("session_id", help="Tabby session id that was recorded")
     rec_import.add_argument("--name", default="", help="Name for the created Tabby app/profile")
-    rec_import.add_argument("--url", default="", help="Login URL (else inferred from the recorded URL flow)")
+    rec_import.add_argument(
+        "--url", default="", help="Login URL (else inferred from the recorded URL flow)"
+    )
     rec_import.add_argument(
         "--auth-mode",
         dest="auth_mode",
@@ -6198,6 +6241,7 @@ def _recording_import_workflow(args: argparse.Namespace, bundle: dict) -> int:
     Skill) directly from the bundle — same standalone compiler the backend
     /workflow-sessions/{id}/export uses, no NoUI-backend round-trip."""
     import re as _re
+
     from compiler.mcp.har_to_tools import HarValidationError
     from compiler.mcp.server_generator import compile_workflow
 
@@ -6271,17 +6315,25 @@ def _recording_import_workflow(args: argparse.Namespace, bundle: dict) -> int:
     mcp = result.get("mcp") or {}
     skill = result.get("skill") or {}
     if mcp:
-        print(f"  MCP server : {_cyan(mcp.get('server_id', server_id))} "
-              f"({len(mcp.get('tools', []))} tool(s))")
+        print(
+            f"  MCP server : {_cyan(mcp.get('server_id', server_id))} "
+            f"({len(mcp.get('tools', []))} tool(s))"
+        )
         print(f"  Output     : {WORKBENCH_DIR / 'mcp_servers' / app_slug / server_id}")
     if skill:
-        print(f"  Skill      : {_cyan(skill.get('skill_id', app_slug))} "
-              f"({len(skill.get('operations', []))} operation(s))")
+        print(
+            f"  Skill      : {_cyan(skill.get('skill_id', app_slug))} "
+            f"({len(skill.get('operations', []))} operation(s))"
+        )
         print(f"  Output     : {WORKBENCH_DIR / 'skills' / app_slug}")
     if not profile_slug:
         print()
         print(_yellow("  No --profile-slug given: tools run unauthenticated. For an authenticated"))
-        print(_yellow("  workflow, re-run with --profile-slug <login-profile> (from recording import of a login)."))
+        print(
+            _yellow(
+                "  workflow, re-run with --profile-slug <login-profile> (from recording import of a login)."
+            )
+        )
     return 0
 
 
@@ -6297,13 +6349,15 @@ def cmd_recording_import(args: argparse.Namespace) -> int:
     `tabby session ensure` all operate on the written bundle, and --promote /
     --as-template work identically."""
     from compiler.login.tabby_client import get_recording_bundle
-    from compiler.recording.bundle_adapter import count_sensitive_unredacted, validate_bundle
     from compiler.login.tabby_draft_generator import generate
+    from compiler.recording.bundle_adapter import count_sensitive_unredacted, validate_bundle
 
     tabby_session_id: str = args.session_id
     auth_mode = getattr(args, "auth_mode", None) or "agent_token"
 
-    print(f"Fetching recording bundle from Tabby ({_cyan(tabby_session_id)}) …", end=" ", flush=True)
+    print(
+        f"Fetching recording bundle from Tabby ({_cyan(tabby_session_id)}) …", end=" ", flush=True
+    )
     try:
         agent_token = _resolve_agent_token()
         bundle = get_recording_bundle(tabby_session_id, agent_token)
@@ -6320,7 +6374,11 @@ def cmd_recording_import(args: argparse.Namespace) -> int:
 
     leaks = count_sensitive_unredacted(bundle)
     if leaks:
-        print(_red(f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."))
+        print(
+            _red(
+                f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."
+            )
+        )
         return 1
 
     if session_type == "workflow":

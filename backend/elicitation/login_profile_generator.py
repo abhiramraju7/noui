@@ -205,9 +205,22 @@ def _analyze_har(har: dict | None) -> dict[str, Any]:
 
 # Common two-part public suffixes whose registrable domain is the last 3 labels.
 _COMPOUND_TLDS = {
-    "co.uk", "org.uk", "ac.uk", "gov.uk",
-    "com.br", "com.au", "com.mx", "com.ar", "com.tr", "com.cn", "com.sg",
-    "co.jp", "co.in", "co.za", "co.nz", "co.kr",
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "com.br",
+    "com.au",
+    "com.mx",
+    "com.ar",
+    "com.tr",
+    "com.cn",
+    "com.sg",
+    "co.jp",
+    "co.in",
+    "co.za",
+    "co.nz",
+    "co.kr",
 }
 
 
@@ -224,7 +237,9 @@ def _registrable_suffix(host: str) -> str | None:
     if len(labels) < 2:
         return None
     last_two = ".".join(labels[-2:])
-    registrable = ".".join(labels[-3:]) if last_two in _COMPOUND_TLDS and len(labels) >= 3 else last_two
+    registrable = (
+        ".".join(labels[-3:]) if last_two in _COMPOUND_TLDS and len(labels) >= 3 else last_two
+    )
     return f".{registrable}"
 
 

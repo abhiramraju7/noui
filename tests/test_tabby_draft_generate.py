@@ -347,7 +347,9 @@ class TestGenerate:
 
 class TestEgressAllowlist:
     def test_helper_collapses_to_registrable_suffix(self) -> None:
-        out = egress_allowlist_from_domains(["www.expedia.com", "c.trvl-media.com", "www.expedia.com"])
+        out = egress_allowlist_from_domains(
+            ["www.expedia.com", "c.trvl-media.com", "www.expedia.com"]
+        )
         assert out == [".expedia.com", ".trvl-media.com"]
 
     def test_helper_handles_compound_tld(self) -> None:

@@ -1,6 +1,6 @@
 ---
 name: noui-record-login
-description: Use this skill when the user wants to record a login flow for an authenticated app and register it with Tabby to get a tabby_profile_id. Triggers on "record a login", "capture a login flow", "register with Tabby", "set up authentication for NoUI", "create a tabby_profile_id", "noui login record", "login recording mode", or "I need auth for my workflow".
+description: Use this skill when the user wants to record a login flow for an authenticated app and register it with Tabby to get a tabby_profile_id. Triggers on "record a login", "capture a login flow", "register with Tabby", "set up authentication for NoUI", "create a tabby_profile_id", "noui login record", "login recording mode", "I need auth for my workflow", "record a login via VNC", "VNC login recording", "noui recording start", "noui recording import", or "record a login without the Chrome extension".
 ---
 
 # NoUI Record Login
@@ -11,7 +11,71 @@ Record a login flow for an authenticated app and register it with Tabby to produ
 
 All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`.
 
-**Prerequisite:** `/noui-setup` must be complete — venv installed, `.env` configured with `ANTHROPIC_API_KEY`, `TABBY_API_URL`, and `TABBY_ADMIN_TOKEN`, Chrome extension loaded.
+**Prerequisite:** `/noui-setup` must be complete — venv installed, `.env` configured with `ANTHROPIC_API_KEY`, `TABBY_API_URL`, and `TABBY_ADMIN_TOKEN`. The Chrome extension is required **only** for the extension capture method below, not for VNC recording.
+
+---
+
+## Two Ways to Capture a Login
+
+Both methods produce the same artifact (a Tabby App + ServiceProfile + a `workbench/login_recordings/noui-<id8>-bundle.json`) and converge on the same post-register steps (`login credentials` → `login validate` → `tabby session ensure`):
+
+1. **Tabby VNC recording (recommended — no extension, no local Chrome).** A human drives a Tabby-hosted browser through a VNC link; the worker captures interactions + URL flow + HAR server-side. See **VNC Recording** immediately below.
+2. **Chrome extension.** Record locally with the NoUI Workflow Recorder extension. See **Chrome Extension Flow** (Steps 1–9) further down.
+
+---
+
+## VNC Recording (no Chrome extension)
+
+A human completes the login in a Tabby browser over a VNC viewer link. The worker captures every interaction (over a network beacon that survives the stealth browser), the URL transitions, and HAR — then the bundle is compiled directly into a Tabby login profile. Passwords/OTP are redacted in-pod before the bundle leaves the browser.
+
+**Prerequisite:** Tabby reachable at `TABBY_API_URL` with agent credentials in `.env`/cache. On a local **Kind** cluster the API is ClusterIP-only, so forward it first (cloud Tabby needs no forward — just point `TABBY_API_URL` at the hosted API):
+
+```bash
+.venv/bin/python cli/main.py tabby port-forward      # local Kind → localhost:18080
+```
+
+### Step V1 — Provision the recording session
+
+```bash
+.venv/bin/python cli/main.py recording start --url "<login-url>"
+```
+
+Prints a Tabby `session_id` and a VNC viewer URL (`…?mode=recording#token=…`). The token is single-use with a ~10-minute TTL — if it expires before you connect, re-run `recording start`.
+
+### Step V2 — Record in the VNC viewer
+
+Open the URL, complete the **full login** (the real site renders fully — egress is unrestricted during recording), then click **"Finish & export"**.
+
+> Click "Finish & export" **only when the login is complete** — it ends the session and tears down the worker. Do not reload the viewer (the single-use token auto-refreshes internally).
+
+### Step V3 — Compile + register
+
+```bash
+.venv/bin/python cli/main.py recording import <session_id> --url "<login-url>" --promote
+```
+
+Pulls the bundle, compiles the login DSL directly (no NoUI-backend round-trip), writes the standard bundle artifact (`workbench/login_recordings/noui-<id8>-bundle.json`), and registers the Tabby App + STAGING ServiceProfile. `extra_egress_allowlist` is auto-populated from the recorded HAR so enforce-mode replay won't hit egress 403s.
+
+- `--auth-mode agent_token` (default) → stored K8s secret reused by the agent; `platform_jwt` → per-user HITL credentials.
+- `--promote` → promote after registering; `--as-template` → also emit a tenant-wide App Template.
+
+> **Kind note:** `--promote` reaches `CANARY` (which the runtime resolves, so the profile is usable), but the `CANARY → ACTIVE` canary-gate bypass uses `docker compose exec postgres` and fails on Kind — the profile stays at `CANARY`. On docker-compose Tabby it reaches `ACTIVE`.
+
+### Step V4 — Converge with the standard flow
+
+From here it is identical to the extension flow — operate on the written bundle (Steps 7–9 below):
+
+```bash
+.venv/bin/python cli/main.py login credentials workbench/login_recordings/noui-<id8>-bundle.json   # Step 7 (interactive — run via ! )
+.venv/bin/python cli/main.py login validate    workbench/login_recordings/noui-<id8>-bundle.json   # Step 8
+.venv/bin/python cli/main.py tabby session ensure --profile <profile_id>                            # Step 9
+```
+
+---
+
+## Chrome Extension Flow
+
+The original capture method, using the NoUI Workflow Recorder extension. Steps 1–9 below. (The VNC method above replaces Steps 1–6 with `recording start` + `recording import`; Steps 7–9 are shared.)
 
 ---
 
@@ -308,7 +372,10 @@ Start
 
 | Command | Purpose |
 |---|---|
-| `.venv/bin/python cli/main.py start` | Start the NoUI backend |
+| `.venv/bin/python cli/main.py tabby port-forward` | (Kind) Forward the cluster Tabby API to `localhost:18080` |
+| `.venv/bin/python cli/main.py recording start --url "<url>" [--workflow]` | **VNC:** provision a Tabby VNC recording session, print the viewer URL |
+| `.venv/bin/python cli/main.py recording import <session_id> [--url <url>] [--auth-mode agent_token\|platform_jwt] [--promote] [--as-template]` | **VNC:** compile the recorded bundle + register the Tabby App + ServiceProfile (writes the standard bundle artifact) |
+| `.venv/bin/python cli/main.py start` | Start the NoUI backend (Chrome-extension flow only) |
 | `.venv/bin/python cli/main.py status` | Check backend and Tabby reachability |
 | `.venv/bin/python cli/main.py login record "<App>" "<url>"` | Create a login recording session |
 | `.venv/bin/python cli/main.py login list` | List existing login sessions |

@@ -230,7 +230,9 @@ def create_recording_session(
         body["profile_id"] = profile_id
     if source_session_id:
         body["source_session_id"] = source_session_id
-    resp = _tabby_http("POST", "/recording/sessions", body=body, token=agent_token)
+    # Provisioning blocks server-side until the worker session row exists (worker
+    # scheduling can take >15s under load), so allow a generous client timeout.
+    resp = _tabby_http("POST", "/recording/sessions", body=body, token=agent_token, timeout=90)
     if not isinstance(resp, dict) or "vnc_url" not in resp:
         raise RuntimeError(f"POST /recording/sessions returned an unexpected payload: {resp}")
     return resp

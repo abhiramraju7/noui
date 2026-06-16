@@ -203,6 +203,57 @@ def _analyze_har(har: dict | None) -> dict[str, Any]:
     return result
 
 
+# Common two-part public suffixes whose registrable domain is the last 3 labels.
+_COMPOUND_TLDS = {
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "com.br",
+    "com.au",
+    "com.mx",
+    "com.ar",
+    "com.tr",
+    "com.cn",
+    "com.sg",
+    "co.jp",
+    "co.in",
+    "co.za",
+    "co.nz",
+    "co.kr",
+}
+
+
+def _registrable_suffix(host: str) -> str | None:
+    """Convert a hostname to a leading-dot egress suffix covering its subdomains
+    (``www.expedia.com`` -> ``.expedia.com``). Heuristic, not a full
+    public-suffix list."""
+    host = (host or "").strip().lower().split(":")[0].rstrip(".")
+    if not host or host == "localhost":
+        return None
+    if all(ch.isdigit() or ch == "." for ch in host):  # bare IP
+        return None
+    labels = host.split(".")
+    if len(labels) < 2:
+        return None
+    last_two = ".".join(labels[-2:])
+    registrable = (
+        ".".join(labels[-3:]) if last_two in _COMPOUND_TLDS and len(labels) >= 3 else last_two
+    )
+    return f".{registrable}"
+
+
+def egress_allowlist_from_domains(domains: list[str] | None) -> list[str]:
+    """Derive a deduplicated egress allowlist (leading-dot suffix patterns) from
+    domains observed in a recording's HAR. Feeds ``extra_egress_allowlist``."""
+    out: list[str] = []
+    for host in domains or []:
+        suffix = _registrable_suffix(host)
+        if suffix and suffix not in out:
+            out.append(suffix)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Core generator
 # ---------------------------------------------------------------------------
@@ -561,6 +612,9 @@ def generate(
     application_draft: dict[str, Any] = {
         "name": app_name,
         "target_urls": [origin],
+        # Auth/CDN domains observed in the HAR, as egress suffix patterns, so the
+        # compiled app's egress allowlist covers the full login flow under enforce.
+        "extra_egress_allowlist": egress_allowlist_from_domains(har_analysis["auth_domains"]),
         "login_config": login_config,
         "keepalive_config": keepalive_config,
         "export_policy": export_policy,

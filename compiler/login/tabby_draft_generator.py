@@ -21,6 +21,7 @@ Outputs (returned as a dict):
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -225,6 +226,64 @@ def _analyze_har(har: dict | None) -> dict[str, Any]:
     return result
 
 
+# Common two-part public suffixes whose registrable domain is the last 3 labels.
+_COMPOUND_TLDS = {
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "com.br",
+    "com.au",
+    "com.mx",
+    "com.ar",
+    "com.tr",
+    "com.cn",
+    "com.sg",
+    "co.jp",
+    "co.in",
+    "co.za",
+    "co.nz",
+    "co.kr",
+}
+
+
+def _registrable_suffix(host: str) -> str | None:
+    """Convert a hostname to a leading-dot egress suffix covering its subdomains
+    (``www.expedia.com`` -> ``.expedia.com``).
+
+    Uses a small compound-TLD table for the common two-part suffixes
+    (``.co.uk``); everything else collapses to the last two labels. Heuristic,
+    not a full public-suffix list — the goal is broad-but-scoped allowlist
+    coverage, and ``extra_egress_allowlist`` stays editable for tightening.
+    """
+    host = (host or "").strip().lower().split(":")[0].rstrip(".")
+    if not host or host == "localhost":
+        return None
+    if all(ch.isdigit() or ch == "." for ch in host):  # bare IP
+        return None
+    labels = host.split(".")
+    if len(labels) < 2:
+        return None
+    last_two = ".".join(labels[-2:])
+    registrable = (
+        ".".join(labels[-3:]) if last_two in _COMPOUND_TLDS and len(labels) >= 3 else last_two
+    )
+    return f".{registrable}"
+
+
+def egress_allowlist_from_domains(domains: list[str] | None) -> list[str]:
+    """Derive a deduplicated egress allowlist (leading-dot suffix patterns) from
+    domains observed in a recording's HAR. Feeds ``extra_egress_allowlist`` so
+    the compiled app runs under egress enforce without per-vendor kubectl edits.
+    """
+    out: list[str] = []
+    for host in domains or []:
+        suffix = _registrable_suffix(host)
+        if suffix and suffix not in out:
+            out.append(suffix)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # App Template payload (tenant-wide auto-provisioning)
 # ---------------------------------------------------------------------------
@@ -289,13 +348,91 @@ def build_app_template_payload(
         "export_policy": export_policy,
         "browser_policy": application_draft.get("browser_policy")
         or {"clipboard": False, "downloads": False, "file_chooser": False},
+        # Cloned onto every auto-provisioned app so per-user sessions inherit the
+        # vendor's auth/CDN domains in their egress allowlist.
+        "extra_egress_allowlist": application_draft.get("extra_egress_allowlist") or [],
         "notification_config": application_draft.get("notification_config") or {},
-        # execute_enabled mirrors the app draft (A4): auto-provisioned apps default
-        # it to false, which breaks /execute/fetch in real K8s. The template entity
-        # has no field for it today (Tabby change documented in gaps.md A4), but we
-        # emit it so the value is carried the moment Tabby adds the column.
-        "execute_enabled": bool(application_draft.get("execute_enabled", True)),
+        # NOTE: execute_enabled is intentionally NOT emitted — the App Template
+        # DTO rejects the field and returns 400 (A4). The auto-provisioned app
+        # picks up execute_enabled from its own creation path, not the template.
     }
+
+
+def _union_scalars(existing: list | None, new: list | None) -> list:
+    """Union two scalar lists; new entries first, existing ones appended."""
+    out: list = []
+    for src in (new or []), (existing or []):
+        for x in src:
+            if x not in out:
+                out.append(x)
+    return out
+
+
+def _union_by_field(existing: list | None, new: list | None, field: str) -> list:
+    """Union two lists of dicts keyed by ``field``; new wins on key conflict."""
+    out: list = []
+    seen: set = set()
+    for src in (new or []), (existing or []):
+        for item in src:
+            if not isinstance(item, dict):
+                continue
+            key = item.get(field)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def merge_template_export_policy(existing_template: dict, new_payload: dict) -> dict:
+    """Merge additive ``export_policy`` fields from an existing template into a
+    new template payload, so an upsert PUT does not clobber extractions /
+    allowlists / cookie credential_types / target_urls accumulated by prior
+    recordings.
+
+    Additive (unioned): ``custom_extractions`` (by ``key``), ``header_allowlist``,
+    ``request_header_allowlist``, ``target_urls``, ``artifact_types``, and
+    ``credential_types`` (cookies by ``name``, headers as scalars).
+    Everything else (``login_config``, ``keepalive_config``, ...) is taken from
+    the new payload — those are per-login-flow, not additive.
+    """
+    merged = dict(new_payload)
+
+    # Top-level extra_egress_allowlist accumulates across recordings (union).
+    merged_extra = _union_scalars(
+        (existing_template or {}).get("extra_egress_allowlist"),
+        new_payload.get("extra_egress_allowlist"),
+    )
+    if merged_extra:
+        merged["extra_egress_allowlist"] = merged_extra
+
+    old_ep = (existing_template or {}).get("export_policy") or {}
+    new_ep = dict(merged.get("export_policy") or {})
+
+    for key in ("header_allowlist", "request_header_allowlist", "target_urls", "artifact_types"):
+        unioned = _union_scalars(old_ep.get(key), new_ep.get(key))
+        if unioned:
+            new_ep[key] = unioned
+
+    custom = _union_by_field(
+        old_ep.get("custom_extractions"), new_ep.get("custom_extractions"), "key"
+    )
+    if custom:
+        new_ep["custom_extractions"] = custom
+
+    old_ct = old_ep.get("credential_types") or {}
+    new_ct = dict(new_ep.get("credential_types") or {})
+    cookies = _union_by_field(old_ct.get("cookies"), new_ct.get("cookies"), "name")
+    headers = _union_scalars(old_ct.get("headers"), new_ct.get("headers"))
+    if cookies:
+        new_ct["cookies"] = cookies
+    if headers:
+        new_ct["headers"] = headers
+    if new_ct:
+        new_ep["credential_types"] = new_ct
+
+    merged["export_policy"] = new_ep
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +440,25 @@ def build_app_template_payload(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_auth_mode(auth_mode: str | None) -> str:
+    """Normalize the credential auth mode.
+
+    'platform_jwt' (Scenario A) → per-user, no stored credentials: the runtime
+    escalates to the end-user via HITL (credential_ref 'manual:').
+    'agent_token'  (Scenario B) → service identity stores credentials in a K8s
+    Secret and reuses them (credential_ref 'k8s:secret/...').
+    Defaults to 'agent_token' (the historical behavior) when unset.
+    """
+    mode = (auth_mode or os.environ.get("NOUI_TABBY_AUTH_MODE") or "agent_token").strip().lower()
+    return "platform_jwt" if mode == "platform_jwt" else "agent_token"
+
+
 def generate(
     session: dict,
     click_events: list[dict],
     url_events: list[dict],
     har: dict | None = None,
+    auth_mode: str | None = None,
 ) -> dict[str, Any]:
     """
     Generate an Application draft, ServiceProfile draft, and review items
@@ -326,11 +477,15 @@ def generate(
           - abcd format: metadata_json containing {"url": "...", "from_url": "..."}
     har:
         HAR object (or None)
+    auth_mode:
+        'platform_jwt' (per-user, HITL-supplied creds) or 'agent_token' (stored
+        K8s Secret). Defaults to $NOUI_TABBY_AUTH_MODE, then 'agent_token'.
 
     Returns
     -------
     Full bundle dict.
     """
+    manual_creds = _resolve_auth_mode(auth_mode) == "platform_jwt"
     session_id = session.get("id", "")
     app_name = session.get("app_name") or "recorded-app"
     login_url = session.get("login_url") or ""
@@ -442,23 +597,49 @@ def generate(
             )
 
         if field_role == "username":
-            steps.append(
-                {
-                    "action": "fill",
-                    "selector": selector,
-                    "value": "${USERNAME}",
-                }
-            )
+            if manual_creds:
+                # Per-user: the end-user supplies their own username/email live.
+                steps.append(
+                    {
+                        "action": "request_human_input",
+                        "input_type": "email",
+                        "field_selector": selector,
+                        "label": "Enter your username or email",
+                        "timeout_ms": 120000,
+                    }
+                )
+            else:
+                steps.append(
+                    {
+                        "action": "fill",
+                        "selector": selector,
+                        "value": "${USERNAME}",
+                    }
+                )
         elif field_role == "password":
             password_selector = selector
-            steps.append(
-                {
-                    "action": "fill",
-                    "selector": selector,
-                    "value": "${PASSWORD}",
-                    "sensitive": True,
-                }
-            )
+            if manual_creds:
+                # Per-user: the end-user supplies their own password live; nothing
+                # is stored. sensitive=true suppresses screenshots of this step.
+                steps.append(
+                    {
+                        "action": "request_human_input",
+                        "input_type": "password",
+                        "field_selector": selector,
+                        "label": "Enter your password",
+                        "sensitive": True,
+                        "timeout_ms": 120000,
+                    }
+                )
+            else:
+                steps.append(
+                    {
+                        "action": "fill",
+                        "selector": selector,
+                        "value": "${PASSWORD}",
+                        "sensitive": True,
+                    }
+                )
         elif field_role == "otp":
             has_otp = True
             otp_selector = selector
@@ -579,8 +760,11 @@ def generate(
         )
 
     # ---- Build credential_ref ----
+    # Scenario A (platform_jwt): 'manual:' — no stored credentials; the recorded
+    # request_human_input steps escalate to the end-user at session creation.
+    # Scenario B (agent_token): a K8s Secret holds reusable service credentials.
     secret_name = f"tabby-{profile_id}"
-    credential_ref = f"k8s:secret/{secret_name}"
+    credential_ref = "manual:" if manual_creds else f"k8s:secret/{secret_name}"
 
     # ---- Build login_config ----
     login_config: dict[str, Any] = {
@@ -645,6 +829,9 @@ def generate(
     application_draft: dict[str, Any] = {
         "name": app_name,
         "target_urls": [origin],
+        # Auth/CDN domains observed in the HAR, as egress suffix patterns, so the
+        # compiled app's egress allowlist covers the full login flow under enforce.
+        "extra_egress_allowlist": egress_allowlist_from_domains(har_analysis["auth_domains"]),
         "login_config": login_config,
         "keepalive_config": keepalive_config,
         "export_policy": export_policy,

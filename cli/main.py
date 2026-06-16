@@ -55,6 +55,7 @@ import base64
 import getpass
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,6 +106,8 @@ ENV_LOCAL = TABBY_DIR / ".env.local"
 ENV_EXAMPLE = TABBY_DIR / ".env.example"
 
 TABBY_PID_FILE = TABBY_DIR / ".tabby-api.pid"
+TABBY_PF_PID_FILE = TABBY_DIR / ".tabby-portforward.pid"
+TABBY_PF_LOG_FILE = TABBY_DIR / ".tabby-portforward.log"
 TABBY_LOG_FILE = TABBY_DIR / ".tabby-api.log"
 TABBY_WORKER_PID_FILE = TABBY_DIR / ".tabby-worker.pid"
 TABBY_WORKER_LOG_FILE = TABBY_DIR / ".tabby-worker.log"
@@ -3791,32 +3794,84 @@ def _load_cached_default_profiles() -> list[str]:
     return profiles if isinstance(profiles, list) else []
 
 
+def _kube_postgres_pod() -> tuple[str, str] | None:
+    """Return (namespace, pod) for the Tabby Postgres pod under K8s/Kind, else None.
+
+    Lets the canary-gate bypass work on a Kind/K8s deployment (kubectl exec)
+    rather than only docker-compose. Namespace overridable via TABBY_K8S_NAMESPACE.
+    """
+    if not shutil.which("kubectl"):
+        return None
+    namespace = os.environ.get("TABBY_K8S_NAMESPACE", "browser-hitl")
+    try:
+        out = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                namespace,
+                "-l",
+                "app.kubernetes.io/component=postgres",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        pod = out.stdout.strip()
+        return (namespace, pod) if pod else None
+    except Exception:
+        return None
+
+
 def _bypass_canary_gate(profile_db_id: str) -> bool:
     sql = (
         f"UPDATE service_profiles "
         f"SET canary_request_count=5, canary_error_count=0 "
         f"WHERE id='{profile_db_id}'"
     )
+    # Kind/K8s: psql via kubectl exec into the Postgres pod. docker-compose: exec
+    # the postgres service. Detect which deployment is live.
+    kube = _kube_postgres_pod()
+    if kube is not None:
+        namespace, pod = kube
+        cmd = [
+            "kubectl",
+            "exec",
+            "-n",
+            namespace,
+            pod,
+            "--",
+            "psql",
+            "-U",
+            "browser_hitl",
+            "-d",
+            "browser_hitl",
+            "-c",
+            sql,
+        ]
+        cwd = None
+    else:
+        cmd = [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "browser_hitl",
+            "-d",
+            "browser_hitl",
+            "-c",
+            sql,
+        ]
+        cwd = str(TABBY_DIR)
     try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "postgres",
-                "psql",
-                "-U",
-                "browser_hitl",
-                "-d",
-                "browser_hitl",
-                "-c",
-                sql,
-            ],
-            cwd=str(TABBY_DIR),
-            check=True,
-            capture_output=True,
-        )
+        subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
         return True
     except Exception as exc:
         print(_red(f"Canary bypass failed: {exc}"))
@@ -4295,6 +4350,106 @@ def cmd_tabby_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tabby_port_forward(args: argparse.Namespace) -> int:
+    """Port-forward a Kind/K8s Tabby API to localhost so the NoUI CLI and the
+    VNC viewer can reach it (the cluster API is ClusterIP-only).
+
+    This is for the K8s deployment (e.g. `make kind-reload-all`), NOT the
+    docker-compose `noui tabby start` path — there the API is already on
+    localhost. The forward is held by a backgrounded `kubectl port-forward`
+    process tracked via a PID file.
+    """
+    namespace = getattr(args, "namespace", None) or "browser-hitl"
+    service = getattr(args, "service", None) or "browser-hitl-api"
+    local_port = getattr(args, "port", None) or 18080
+    remote_port = getattr(args, "remote_port", None) or 8000
+
+    if getattr(args, "stop", False):
+        pid = _read_pid(TABBY_PF_PID_FILE)
+        if pid is None:
+            print(_yellow("No port-forward PID file — nothing to stop."))
+            return 0
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        _clear_pid(TABBY_PF_PID_FILE)
+        print(_green(f"✓ Stopped port-forward (PID {pid})."))
+        return 0
+
+    existing = _read_pid(TABBY_PF_PID_FILE)
+    if existing is not None and _pid_running(existing):
+        print(_yellow(f"Port-forward already running (PID {existing}) → localhost:{local_port}"))
+        return 0
+
+    if not shutil.which("kubectl"):
+        print(_red("kubectl not found in PATH. Install it or run the port-forward manually."))
+        return 1
+    # Preflight: cluster + service reachable.
+    try:
+        subprocess.run(
+            ["kubectl", "get", "svc", service, "-n", namespace],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(_red(f"Service '{service}' not found in namespace '{namespace}':"))
+        print(_red(f"  {exc.stderr.decode(errors='replace').strip()}"))
+        print(_yellow("  Is the Kind stack up? Try: cd tabby && make kind-reload-all"))
+        return 1
+
+    TABBY_PF_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(TABBY_PF_LOG_FILE, "a")  # noqa: SIM115
+    proc = subprocess.Popen(
+        [
+            "kubectl",
+            "port-forward",
+            "-n",
+            namespace,
+            f"svc/{service}",
+            f"{local_port}:{remote_port}",
+        ],
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
+    )
+    TABBY_PF_PID_FILE.write_text(str(proc.pid))
+
+    print(
+        f"Port-forwarding {service} → localhost:{local_port} (PID {proc.pid}) …",
+        end="",
+        flush=True,
+    )
+    url = f"http://localhost:{local_port}"
+    for _ in range(20):
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            print()
+            print(
+                _red(
+                    f"port-forward exited early (code {proc.returncode}) — see {TABBY_PF_LOG_FILE}"
+                )
+            )
+            _clear_pid(TABBY_PF_PID_FILE)
+            return 1
+        try:
+            with urllib.request.urlopen(f"{url}/health/live", timeout=2):
+                break
+        except Exception:
+            continue
+    print(_green(" ✓"))
+    print()
+    print(_bold("Tabby API reachable at:"))
+    print(f"  {_cyan(url)}")
+    print()
+    print(f"  Point NoUI at it:  {_bold(f'export TABBY_API_URL={url}')}")
+    print(f"  Stop it with:      {_bold('noui tabby port-forward --stop')}")
+    return 0
+
+
 def _cmd_tabby_setup_cloud(args: argparse.Namespace) -> int:
     """Configure NoUI for Tabby Cloud via the platform-JWT token-exchange flow.
 
@@ -4692,10 +4847,16 @@ def _emit_app_template(
                 print(_red("  Template name exists but could not locate it by pattern to update."))
                 return None
             tmpl_id = existing.get("id", "")
+            # Merge additive export_policy fields from the existing template so
+            # the PUT does not clobber extractions/allowlists/cookies/target_urls
+            # accumulated by prior recordings.
+            from compiler.login.tabby_draft_generator import merge_template_export_policy
+
+            merged_payload = merge_template_export_policy(existing, payload)
             print(f"  Updating App Template {_cyan(tmpl_id)} …", end=" ", flush=True)
             try:
                 resp = _tabby_http(
-                    "PUT", f"/admin/app-templates/{tmpl_id}", payload, token=admin_token
+                    "PUT", f"/admin/app-templates/{tmpl_id}", merged_payload, token=admin_token
                 )
                 assert isinstance(resp, dict)
                 print(_green("done"))
@@ -5708,6 +5869,76 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remove from the project-scoped path instead of the global path",
     )
 
+    # --- recording (Tabby VNC) ---
+    rec_parser = sub.add_parser("recording", help="Record login/workflow via a Tabby VNC session")
+    rec_sub = rec_parser.add_subparsers(dest="recording_command")
+    rec_start = rec_sub.add_parser(
+        "start", help="Provision a Tabby VNC recording session and print the viewer URL"
+    )
+    rec_start.add_argument(
+        "--url", default="", help="Login/start URL to open in the recorded browser"
+    )
+    rec_start.add_argument(
+        "--workflow", action="store_true", help="Workflow recording (default: login)"
+    )
+    rec_start.add_argument(
+        "--profile", default="", help="(reserved) existing Tabby profile id for workflow auth"
+    )
+    rec_start.add_argument(
+        "--from",
+        dest="from_session",
+        default="",
+        help="Seed cookies from a prior login recording (its session id) so the recording "
+        "browser starts authenticated — session reuse, no stored credentials",
+    )
+    rec_import = rec_sub.add_parser(
+        "import",
+        help="Pull a Tabby recording bundle, compile it, and register the Tabby App + ServiceProfile",
+    )
+    rec_import.add_argument("session_id", help="Tabby session id that was recorded")
+    rec_import.add_argument("--name", default="", help="Name for the created Tabby app/profile")
+    rec_import.add_argument(
+        "--url", default="", help="Login URL (else inferred from the recorded URL flow)"
+    )
+    rec_import.add_argument(
+        "--auth-mode",
+        dest="auth_mode",
+        default="agent_token",
+        choices=["agent_token", "platform_jwt"],
+        help="Credential model: agent_token (stored K8s secret, default) or platform_jwt (per-user HITL)",
+    )
+    rec_import.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote the profile STAGING → ACTIVE after registering (required before tool calls)",
+    )
+    rec_import.add_argument(
+        "--as-template",
+        dest="as_template",
+        action="store_true",
+        help="(login) Also emit a tenant-wide Tabby App Template (federated/platform_jwt auto-provisioning)",
+    )
+    rec_import.add_argument(
+        "--as",
+        dest="as_target",
+        default="mcp",
+        choices=["mcp", "skill", "both"],
+        help="(workflow) Output format: mcp (default), skill, or both",
+    )
+    rec_import.add_argument(
+        "--profile-slug",
+        dest="profile_slug",
+        default="",
+        help="(workflow) Tabby login-profile slug for authenticated runtime credential requests",
+    )
+    rec_import.add_argument(
+        "--execution-mode",
+        dest="execution_mode",
+        default="tabby",
+        choices=["tabby", "http", "harness"],
+        help="(workflow) Execution strategy for generated tools (default: tabby)",
+    )
+
     # --- autopilot ---
     ap_parser = sub.add_parser("autopilot", help="Autopilot recording commands")
     ap_sub = ap_parser.add_subparsers(dest="autopilot_command")
@@ -5781,6 +6012,18 @@ def _build_parser() -> argparse.ArgumentParser:
     tabby_stop_p.add_argument(
         "--infra", action="store_true", help="Also stop Docker Compose services"
     )
+
+    tabby_pf_p = tabby_sub.add_parser(
+        "port-forward",
+        help="Port-forward the Kind/K8s Tabby API to localhost (for VNC recording)",
+    )
+    tabby_pf_p.add_argument("--namespace", default="browser-hitl", help="K8s namespace")
+    tabby_pf_p.add_argument("--service", default="browser-hitl-api", help="K8s service name")
+    tabby_pf_p.add_argument("--port", type=int, default=18080, help="Local port (default 18080)")
+    tabby_pf_p.add_argument(
+        "--remote-port", type=int, default=8000, help="Service port (default 8000)"
+    )
+    tabby_pf_p.add_argument("--stop", action="store_true", help="Stop the running port-forward")
 
     tabby_setup_p = tabby_sub.add_parser(
         "setup",
@@ -5952,6 +6195,302 @@ def _dispatch_login(args: argparse.Namespace) -> int:
     return fn(args)
 
 
+def _resolve_agent_token() -> str:
+    """Resolve a Tabby agent bearer token from env or the creds cache."""
+    client_id = os.environ.get("TABBY_CLIENT_ID", "")
+    client_secret = os.environ.get("TABBY_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        cache = _load_cache()
+        client_id = client_id or cache.get("client_id", "")
+        client_secret = client_secret or cache.get("client_secret", "")
+    from compiler.login.tabby_client import get_agent_token
+
+    return get_agent_token(client_id, client_secret)
+
+
+def _upload_har_multipart(session_id: str, session_type: str, har: dict[str, Any]) -> None:
+    """POST a HAR document to the backend as multipart/form-data (field 'file')."""
+    boundary = "----nouiRecordingBoundary"
+    har_bytes = json.dumps(har).encode()
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{session_id}.har"\r\n'
+            "Content-Type: application/json\r\n\r\n"
+        ).encode()
+        + har_bytes
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    url = f"{BACKEND_URL}/sessions/{session_id}/har?session_type={session_type}"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        raise RuntimeError(f"HAR upload failed: HTTP {exc.code}: {body_text}") from exc
+
+
+def _recording_import_workflow(args: argparse.Namespace, bundle: dict) -> int:
+    """Compile a VNC *workflow* recording bundle into a FastMCP server (and/or
+    Skill) directly from the bundle — same standalone compiler the backend
+    /workflow-sessions/{id}/export uses, no NoUI-backend round-trip."""
+    import re as _re
+
+    from compiler.mcp.har_to_tools import HarValidationError
+    from compiler.mcp.server_generator import compile_workflow
+
+    tabby_session_id: str = args.session_id
+    target = getattr(args, "as_target", None) or "mcp"
+    profile_slug = getattr(args, "profile_slug", "") or ""
+    execution_mode = getattr(args, "execution_mode", None) or "tabby"
+    name = args.name or f"recording-{tabby_session_id[:8]}"
+    app_slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "app"
+    server_id = f"{app_slug}-{tabby_session_id[:8]}"
+
+    har = bundle.get("har") or {}
+    clicks = bundle.get("click_events", [])
+    urls = bundle.get("url_events", [])
+    har_entries = len(har.get("log", {}).get("entries", []))
+
+    print(
+        f"Compiling workflow recording → {target} "
+        f"(execution_mode={execution_mode}, {har_entries} HAR entries) …",
+        end=" ",
+        flush=True,
+    )
+    result: dict = {}
+    try:
+        if target in ("mcp", "both"):
+            mcp_dir = str(WORKBENCH_DIR / "mcp_servers" / app_slug / server_id)
+            result["mcp"] = compile_workflow(
+                session_id=tabby_session_id,
+                session_name=name,
+                app_slug=app_slug,
+                tabby_profile_id="",
+                har=har,
+                click_events=clicks,
+                url_events=urls,
+                output_dir=mcp_dir,
+                profile_slug=profile_slug,
+                profile_db_id="",
+                execution_mode=execution_mode,
+            )
+        if target in ("skill", "both"):
+            from compiler.skill.skill_generator import compile_workflow_to_skill
+
+            skill_dir = str(WORKBENCH_DIR / "skills" / app_slug)
+            result["skill"] = compile_workflow_to_skill(
+                session_id=tabby_session_id,
+                session_name=name,
+                app_slug=app_slug,
+                tabby_profile_id="",
+                har=har,
+                click_events=clicks,
+                url_events=urls,
+                output_dir=skill_dir,
+                profile_slug=profile_slug,
+                profile_db_id="",
+                description_override="",
+                execution_mode=execution_mode,
+                start_url=(args.url or ""),
+            )
+        print(_green("done"))
+    except HarValidationError as exc:
+        print()
+        print(_red(f"MCP compilation rejected: {exc}"))
+        return 1
+    except Exception as exc:  # noqa: BLE001 — surface any compile failure
+        print()
+        print(_red(f"Workflow compile failed: {exc}"))
+        return 1
+
+    print()
+    print(_bold("Compiled workflow recording:"))
+    mcp = result.get("mcp") or {}
+    skill = result.get("skill") or {}
+    if mcp:
+        print(
+            f"  MCP server : {_cyan(mcp.get('server_id', server_id))} "
+            f"({len(mcp.get('tools', []))} tool(s))"
+        )
+        print(f"  Output     : {WORKBENCH_DIR / 'mcp_servers' / app_slug / server_id}")
+    if skill:
+        print(
+            f"  Skill      : {_cyan(skill.get('skill_id', app_slug))} "
+            f"({len(skill.get('operations', []))} operation(s))"
+        )
+        print(f"  Output     : {WORKBENCH_DIR / 'skills' / app_slug}")
+    if not profile_slug:
+        print()
+        print(_yellow("  No --profile-slug given: tools run unauthenticated. For an authenticated"))
+        print(
+            _yellow(
+                "  workflow, re-run with --profile-slug <login-profile> (from recording import of a login)."
+            )
+        )
+    return 0
+
+
+def cmd_recording_import(args: argparse.Namespace) -> int:
+    """Pull a Tabby VNC recording bundle, compile it, and register the Tabby
+    App + ServiceProfile — end to end, no NoUI backend round-trip.
+
+    The recorder captures everything the compiler needs (interactions, URL flow,
+    HAR), so we run compiler.login.tabby_draft_generator.generate() directly on
+    the bundle, write the SAME bundle artifact `login register` produces, and
+    delegate to it. That makes the VNC path converge with the existing login
+    pipeline: `login credentials` / `login promote` / `login validate` /
+    `tabby session ensure` all operate on the written bundle, and --promote /
+    --as-template work identically."""
+    from compiler.login.tabby_client import get_recording_bundle
+    from compiler.login.tabby_draft_generator import generate
+    from compiler.recording.bundle_adapter import count_sensitive_unredacted, validate_bundle
+
+    tabby_session_id: str = args.session_id
+    auth_mode = getattr(args, "auth_mode", None) or "agent_token"
+
+    print(
+        f"Fetching recording bundle from Tabby ({_cyan(tabby_session_id)}) …", end=" ", flush=True
+    )
+    try:
+        agent_token = _resolve_agent_token()
+        bundle = get_recording_bundle(tabby_session_id, agent_token)
+        session_type = validate_bundle(bundle)
+        print(_green("done"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"Fetch failed: {exc}"))
+        return 1
+    except ValueError as exc:
+        print()
+        print(_red(f"Invalid bundle: {exc}"))
+        return 1
+
+    leaks = count_sensitive_unredacted(bundle)
+    if leaks:
+        print(
+            _red(
+                f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."
+            )
+        )
+        return 1
+
+    if session_type == "workflow":
+        return _recording_import_workflow(args, bundle)
+    # else: login (compile login DSL + register the Tabby App/ServiceProfile)
+
+    # Resolve the login URL (flag wins, else first http(s) URL transition).
+    login_url = (args.url or "").strip()
+    if not login_url:
+        for u in bundle.get("url_events", []) or []:
+            to = (u.get("to_url") or "").strip()
+            if to.startswith("http"):
+                login_url = to
+                break
+    name = args.name or f"recording-{tabby_session_id[:8]}"
+    session = {"id": tabby_session_id, "app_name": name, "login_url": login_url}
+
+    print(f"Compiling login profile from recording (auth_mode={auth_mode}) …", end=" ", flush=True)
+    try:
+        result = generate(
+            session,
+            bundle.get("click_events", []),
+            bundle.get("url_events", []),
+            har=bundle.get("har"),
+            auth_mode=auth_mode,
+        )
+        print(_green("done"))
+    except Exception as exc:  # noqa: BLE001 — surface any compile failure to the user
+        print()
+        print(_red(f"Compile failed: {exc}"))
+        return 1
+
+    validation = result.get("validation", {})
+    if not validation.get("generator_valid", True):
+        print(_red(f"Generated profile is invalid: {validation.get('issues')}"))
+        return 1
+
+    app_draft = result.get("application_draft", {})
+    steps = app_draft.get("login_config", {}).get("steps", [])
+    allowlist = app_draft.get("extra_egress_allowlist", []) or []
+    har_entries = len(bundle.get("har", {}).get("log", {}).get("entries", []))
+    print(
+        f"  {len(steps)} login step(s), {len(allowlist)} egress domain(s) "
+        f"(from {har_entries} HAR entries)"
+    )
+
+    # Write the SAME bundle artifact `login register` reads, then delegate to it.
+    # This converges the VNC path with the existing login pipeline: the written
+    # bundle is what login credentials/promote/validate operate on.
+    LOGIN_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    bundle_path = LOGIN_RECORDINGS_DIR / f"noui-{tabby_session_id[:8]}-bundle.json"
+    bundle_path.write_text(json.dumps(result, indent=2) + "\n")
+    print(f"  Compiled bundle: {_cyan(str(bundle_path))}")
+    print()
+
+    reg_args = argparse.Namespace(
+        bundle_file=str(bundle_path),
+        promote=getattr(args, "promote", False),
+        as_template=getattr(args, "as_template", False),
+    )
+    return cmd_login_register(reg_args)
+
+
+def cmd_recording_start(args: argparse.Namespace) -> int:
+    """Provision a Tabby VNC recording session and print the viewer URL."""
+    mode = "workflow" if getattr(args, "workflow", False) else "login"
+    from compiler.login.tabby_client import create_recording_session
+
+    source_session_id = getattr(args, "from_session", "") or ""
+    print(f"Provisioning {mode} recording session on Tabby …", end=" ", flush=True)
+    try:
+        token = _resolve_agent_token()
+        result = create_recording_session(
+            mode, args.url or "", token, args.profile or "", source_session_id=source_session_id
+        )
+        print(_green("done"))
+    except RuntimeError as exc:
+        print()
+        print(_red(f"Provisioning failed: {exc}"))
+        return 1
+
+    assert isinstance(result, dict)
+    session_id = result.get("session_id", "")
+    vnc_url = result.get("vnc_url", "")
+    print()
+    print(_bold("Recording session ready:"))
+    print(f"  Tabby session: {_cyan(session_id)}")
+    print(f"  Mode         : {mode}")
+    print()
+    print(_bold("Open this URL, drive the browser, then click 'Finish & export':"))
+    print(f"  {vnc_url}")
+    print()
+    print(f"  Then run: {_bold(f'noui recording import {session_id}')}")
+    return 0
+
+
+def _dispatch_recording(args: argparse.Namespace) -> int:
+    cmd = getattr(args, "recording_command", None)
+    if cmd is None:
+        print("Usage: noui recording {start,import}")
+        return 1
+    dispatch = {
+        "start": cmd_recording_start,
+        "import": cmd_recording_import,
+    }
+    fn = dispatch.get(cmd)
+    if fn is None:
+        print(_red(f"Unknown recording subcommand: {cmd}"))
+        return 1
+    return fn(args)
+
+
 def _dispatch_workflow(args: argparse.Namespace) -> int:
     cmd = getattr(args, "workflow_command", None)
     if cmd is None:
@@ -6076,13 +6615,14 @@ def _dispatch_tabby_template(args: argparse.Namespace) -> int:
 def _dispatch_tabby(args: argparse.Namespace) -> int:
     cmd = getattr(args, "tabby_command", None)
     if cmd is None:
-        print("Usage: noui tabby {status,start,stop,setup,template,session}")
+        print("Usage: noui tabby {status,start,stop,setup,port-forward,template,session}")
         return 1
     dispatch = {
         "status": cmd_tabby_status,
         "start": cmd_tabby_start,
         "stop": cmd_tabby_stop,
         "setup": cmd_tabby_setup,
+        "port-forward": cmd_tabby_port_forward,
         "template": _dispatch_tabby_template,
         "session": _dispatch_tabby_session,
     }
@@ -6128,6 +6668,7 @@ def main() -> None:
         "skill": _dispatch_skill,
         "autopilot": _dispatch_autopilot,
         "tabby": _dispatch_tabby,
+        "recording": _dispatch_recording,
     }
 
     fn = dispatch.get(args.command)

@@ -207,6 +207,57 @@ def get_agent_token(client_id: str, client_secret: str) -> str:
     return token
 
 
+def create_recording_session(
+    recording_mode: str,
+    start_url: str,
+    agent_token: str,
+    profile_id: str = "",
+    source_session_id: str = "",
+) -> dict:
+    """
+    POST /recording/sessions (agent bearer) — provision a recording-shell
+    session and get back an authenticated VNC URL.
+
+    ``source_session_id`` seeds the recording browser with the cookies captured
+    by a prior login recording (session reuse), so the human starts already
+    authenticated without stored credentials.
+
+    Returns {session_id, app_id, recording_mode, vnc_url, expires_at}.
+    Raises RuntimeError on failure.
+    """
+    body: dict[str, Any] = {"recording_mode": recording_mode, "start_url": start_url}
+    if profile_id:
+        body["profile_id"] = profile_id
+    if source_session_id:
+        body["source_session_id"] = source_session_id
+    # Provisioning blocks server-side until the worker session row exists (worker
+    # scheduling can take >15s under load), so allow a generous client timeout.
+    resp = _tabby_http("POST", "/recording/sessions", body=body, token=agent_token, timeout=90)
+    if not isinstance(resp, dict) or "vnc_url" not in resp:
+        raise RuntimeError(f"POST /recording/sessions returned an unexpected payload: {resp}")
+    return resp
+
+
+def get_recording_bundle(session_id: str, agent_token: str) -> dict:
+    """
+    GET /recording/sessions/{session_id}/bundle (agent bearer).
+
+    Returns the drained VNC recording bundle (HAR + click_events + url_events)
+    that the worker captured and the API persisted on "Finish & export".
+    Raises RuntimeError if the bundle is missing or the response is malformed.
+    """
+    resp = _tabby_http(
+        "GET",
+        f"/recording/sessions/{session_id}/bundle",
+        token=agent_token,
+    )
+    if not isinstance(resp, dict) or "recording_mode" not in resp:
+        raise RuntimeError(
+            f"GET /recording/sessions/{session_id}/bundle returned an unexpected payload: {resp}"
+        )
+    return resp
+
+
 def request_credentials(profile_slug: str, agent_token: str) -> dict:
     """
     POST /credentials/request using the profile slug (not the DB UUID).

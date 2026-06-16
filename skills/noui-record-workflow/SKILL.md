@@ -1,6 +1,6 @@
 ---
 name: noui-record-workflow
-description: Use this skill when the user wants to record a browser workflow and export it as a FastMCP server, a Claude Code Skill, or both. Triggers on "record a workflow", "export as MCP", "export as skill", "generate a FastMCP server", "generate a Claude Code skill", "noui workflow record", "workflow export", "capture a workflow", "turn a workflow into a tool", "create an MCP server from a website", or "I want to automate this workflow". Covers authenticated (session-cookie via Tabby), static API-key, and unauthenticated sub-paths. Covers both output formats.
+description: Use this skill when the user wants to record a browser workflow and export it as a FastMCP server, a Claude Code Skill, or both. Triggers on "record a workflow", "export as MCP", "export as skill", "generate a FastMCP server", "generate a Claude Code skill", "noui workflow record", "workflow export", "capture a workflow", "turn a workflow into a tool", "create an MCP server from a website", "I want to automate this workflow", "record a workflow via VNC", "VNC workflow recording", "noui recording start --workflow", "noui recording import", or "record a workflow without the Chrome extension". Covers authenticated (session-cookie via Tabby), static API-key, and unauthenticated sub-paths. Covers both output formats.
 ---
 
 # NoUI Record Workflow
@@ -12,6 +12,58 @@ All commands run from the `noui/` directory using `.venv/bin/python cli/main.py`
 **Prerequisite:** `/noui-setup` must be complete. For Path A (session-cookie), `/noui-record-login` must also be complete and a live Tabby browser session must be running (`tabby session ensure`).
 
 > **HEALTHY ≠ authenticated.** A session reaching `HEALTHY` only means the keepalive passed — it does **not** prove the browser is logged in. An unfinished login lets `fetch(credentials:'include')` run unauthenticated, and the target's 401/403 comes back **wrapped as a 200 body**, so a tool can silently return error pages. Before trusting generated output: (1) pre-warm the session at the authenticated entry point with `tabby session ensure --profile <slug> --open <auth-url>` (or `--skill <id>`), and (2) verify one known-authenticated request returns real data. See `/noui-tabby-integration` for the full failure mode.
+
+---
+
+## Two Ways to Capture a Workflow
+
+Both methods produce an MCP server and/or Skill from the recorded HAR:
+
+1. **Tabby VNC recording (recommended — no extension, no local Chrome).** A human drives a Tabby-hosted browser through a VNC link; the worker captures HAR + interactions server-side. For authenticated workflows, the recording browser is seeded with a prior login recording's cookies so it starts already signed in. See **VNC Recording** immediately below.
+2. **Chrome extension.** Record locally with the NoUI Workflow Recorder extension. See **Chrome Extension Flow** (Steps 1–4) further down. The output-format, execution, and auth concepts below apply to both.
+
+---
+
+## VNC Recording (no Chrome extension)
+
+A human drives a Tabby browser over a VNC link; the worker captures the HAR (the API calls become tools) + interactions, then the bundle is compiled directly into an MCP server / Skill — no NoUI-backend ingestion round-trip.
+
+**Prerequisite:** Tabby reachable at `TABBY_API_URL` with agent credentials in `.env`/cache. On a local **Kind** cluster, forward the API first (cloud Tabby needs no forward):
+
+```bash
+.venv/bin/python cli/main.py tabby port-forward      # local Kind → localhost:18080
+```
+
+### Step V1 — Provision the recording session
+
+```bash
+# Unauthenticated / public workflow:
+.venv/bin/python cli/main.py recording start --workflow --url "<start-url>"
+
+# Authenticated workflow — seed cookies from a prior LOGIN recording (its
+# session id) so the browser starts already signed in (no stored credentials):
+.venv/bin/python cli/main.py recording start --workflow --from <login-recording-session-id> --url "<start-url>"
+```
+
+`--from` requires a login recording captured via `/noui-record-login`'s VNC path (cookie capture). Prints a Tabby `session_id` + a VNC viewer URL (single-use token, ~10-min TTL). The worker logs `Seeded N cookie(s) from source login recording` when seeding succeeds.
+
+### Step V2 — Record in the VNC viewer
+
+Open the URL, verify you're signed in (for `--from` sessions), perform the **complete workflow** you want to automate, then click **"Finish & export"**.
+
+### Step V3 — Compile to MCP / Skill
+
+```bash
+.venv/bin/python cli/main.py recording import <session_id> --as mcp [--profile-slug <login-slug>] [--execution-mode tabby]
+```
+
+Pulls the bundle and compiles it directly (same standalone compiler the backend uses), writing to `workbench/mcp_servers/<app_slug>/<server_id>/` (and `workbench/skills/<app_slug>/` for `--as skill|both`).
+
+- `--as mcp` (default) | `skill` | `both`.
+- `--profile-slug <slug>` → wires runtime auth (tools call the target as that Tabby login profile via `/execute/fetch`). **Omit and tools run unauthenticated.** For an authenticated workflow, register the login first (`recording import <login-session>` → a login profile) and pass its slug here.
+- `--execution-mode tabby` (default) | `http` | `harness`.
+
+Then continue with `/noui-generate-mcp` (start/connect the server) and `/noui-generalize` (rename raw params, prune ad/tracking tools). The output-format guidance, execution model, and auth notes in the rest of this skill all apply.
 
 ---
 
@@ -122,6 +174,12 @@ The compiler auto-detects the strategy from the HAR (Authorization header + no S
 - **NEVER** pass the DB UUID as `--profile-slug` — that is admin-only; use the human-readable slug (e.g. `example-bank`, not `8fdadf43-...`)
 - **ALWAYS** note the `server_id` printed after export — it is required for all `mcp` commands
 - **ALWAYS** create the workflow session with the CLI before the user records in Chrome — the session_id is needed for export
+
+---
+
+## Chrome Extension Flow
+
+The original capture method, using the NoUI Workflow Recorder extension and the NoUI backend. Steps 1–4 below. (The VNC method above replaces Steps 1–3 with `recording start --workflow` + the VNC viewer, and Step 4 with `recording import --as ...`.)
 
 ---
 
@@ -293,7 +351,10 @@ Start
 
 | Command | Purpose |
 |---|---|
-| `.venv/bin/python cli/main.py start` | Start the NoUI backend |
+| `.venv/bin/python cli/main.py tabby port-forward` | (Kind) Forward the cluster Tabby API to `localhost:18080` |
+| `.venv/bin/python cli/main.py recording start --workflow [--from <login-session>] --url "<url>"` | **VNC:** provision a workflow recording session (optionally seeded with a login recording's cookies), print the viewer URL |
+| `.venv/bin/python cli/main.py recording import <session_id> --as mcp [--profile-slug <slug>] [--execution-mode tabby]` | **VNC:** compile the recorded bundle → MCP server (and/or Skill), directly from the HAR |
+| `.venv/bin/python cli/main.py start` | Start the NoUI backend (Chrome-extension flow only) |
 | `.venv/bin/python cli/main.py status` | Check backend reachability and session counts |
 | `.venv/bin/python cli/main.py workflow record "<Name>" "<url>"` | Create a workflow recording session |
 | `.venv/bin/python cli/main.py workflow list` | List existing workflow sessions |

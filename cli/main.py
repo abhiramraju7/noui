@@ -5844,6 +5844,13 @@ def _build_parser() -> argparse.ArgumentParser:
     rec_start.add_argument(
         "--profile", default="", help="(reserved) existing Tabby profile id for workflow auth"
     )
+    rec_start.add_argument(
+        "--from",
+        dest="from_session",
+        default="",
+        help="Seed cookies from a prior login recording (its session id) so the recording "
+        "browser starts authenticated — session reuse, no stored credentials",
+    )
     rec_import = rec_sub.add_parser(
         "import", help="Pull a Tabby recording bundle, compile it, and register the Tabby App + ServiceProfile"
     )
@@ -6382,10 +6389,13 @@ def cmd_recording_start(args: argparse.Namespace) -> int:
     mode = "workflow" if getattr(args, "workflow", False) else "login"
     from compiler.login.tabby_client import create_recording_session
 
+    source_session_id = getattr(args, "from_session", "") or ""
     print(f"Provisioning {mode} recording session on Tabby …", end=" ", flush=True)
     try:
         token = _resolve_agent_token()
-        result = create_recording_session(mode, args.url or "", token, args.profile or "")
+        result = create_recording_session(
+            mode, args.url or "", token, args.profile or "", source_session_id=source_session_id
+        )
         print(_green("done"))
     except RuntimeError as exc:
         print()

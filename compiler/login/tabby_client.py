@@ -212,10 +212,15 @@ def create_recording_session(
     start_url: str,
     agent_token: str,
     profile_id: str = "",
+    source_session_id: str = "",
 ) -> dict:
     """
     POST /recording/sessions (agent bearer) — provision a recording-shell
     session and get back an authenticated VNC URL.
+
+    ``source_session_id`` seeds the recording browser with the cookies captured
+    by a prior login recording (session reuse), so the human starts already
+    authenticated without stored credentials.
 
     Returns {session_id, app_id, recording_mode, vnc_url, expires_at}.
     Raises RuntimeError on failure.
@@ -223,6 +228,8 @@ def create_recording_session(
     body: dict[str, Any] = {"recording_mode": recording_mode, "start_url": start_url}
     if profile_id:
         body["profile_id"] = profile_id
+    if source_session_id:
+        body["source_session_id"] = source_session_id
     resp = _tabby_http("POST", "/recording/sessions", body=body, token=agent_token)
     if not isinstance(resp, dict) or "vnc_url" not in resp:
         raise RuntimeError(f"POST /recording/sessions returned an unexpected payload: {resp}")

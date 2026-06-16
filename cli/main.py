@@ -3794,32 +3794,57 @@ def _load_cached_default_profiles() -> list[str]:
     return profiles if isinstance(profiles, list) else []
 
 
+def _kube_postgres_pod() -> tuple[str, str] | None:
+    """Return (namespace, pod) for the Tabby Postgres pod under K8s/Kind, else None.
+
+    Lets the canary-gate bypass work on a Kind/K8s deployment (kubectl exec)
+    rather than only docker-compose. Namespace overridable via TABBY_K8S_NAMESPACE.
+    """
+    if not shutil.which("kubectl"):
+        return None
+    namespace = os.environ.get("TABBY_K8S_NAMESPACE", "browser-hitl")
+    try:
+        out = subprocess.run(
+            [
+                "kubectl", "get", "pods", "-n", namespace,
+                "-l", "app.kubernetes.io/component=postgres",
+                "-o", "jsonpath={.items[0].metadata.name}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        pod = out.stdout.strip()
+        return (namespace, pod) if pod else None
+    except Exception:
+        return None
+
+
 def _bypass_canary_gate(profile_db_id: str) -> bool:
     sql = (
         f"UPDATE service_profiles "
         f"SET canary_request_count=5, canary_error_count=0 "
         f"WHERE id='{profile_db_id}'"
     )
+    # Kind/K8s: psql via kubectl exec into the Postgres pod. docker-compose: exec
+    # the postgres service. Detect which deployment is live.
+    kube = _kube_postgres_pod()
+    if kube is not None:
+        namespace, pod = kube
+        cmd = [
+            "kubectl", "exec", "-n", namespace, pod, "--",
+            "psql", "-U", "browser_hitl", "-d", "browser_hitl", "-c", sql,
+        ]
+        cwd = None
+    else:
+        cmd = [
+            "docker", "compose", "exec", "-T", "postgres",
+            "psql", "-U", "browser_hitl", "-d", "browser_hitl", "-c", sql,
+        ]
+        cwd = str(TABBY_DIR)
     try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "postgres",
-                "psql",
-                "-U",
-                "browser_hitl",
-                "-d",
-                "browser_hitl",
-                "-c",
-                sql,
-            ],
-            cwd=str(TABBY_DIR),
-            check=True,
-            capture_output=True,
-        )
+        subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
         return True
     except Exception as exc:
         print(_red(f"Canary bypass failed: {exc}"))
@@ -5841,7 +5866,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--as-template",
         dest="as_template",
         action="store_true",
-        help="Also emit a tenant-wide Tabby App Template (federated/platform_jwt auto-provisioning)",
+        help="(login) Also emit a tenant-wide Tabby App Template (federated/platform_jwt auto-provisioning)",
+    )
+    rec_import.add_argument(
+        "--as",
+        dest="as_target",
+        default="mcp",
+        choices=["mcp", "skill", "both"],
+        help="(workflow) Output format: mcp (default), skill, or both",
+    )
+    rec_import.add_argument(
+        "--profile-slug",
+        dest="profile_slug",
+        default="",
+        help="(workflow) Tabby login-profile slug for authenticated runtime credential requests",
+    )
+    rec_import.add_argument(
+        "--execution-mode",
+        dest="execution_mode",
+        default="tabby",
+        choices=["tabby", "http", "harness"],
+        help="(workflow) Execution strategy for generated tools (default: tabby)",
     )
 
     # --- autopilot ---
@@ -6141,6 +6186,98 @@ def _upload_har_multipart(session_id: str, session_type: str, har: dict[str, Any
         raise RuntimeError(f"HAR upload failed: HTTP {exc.code}: {body_text}") from exc
 
 
+def _recording_import_workflow(args: argparse.Namespace, bundle: dict) -> int:
+    """Compile a VNC *workflow* recording bundle into a FastMCP server (and/or
+    Skill) directly from the bundle — same standalone compiler the backend
+    /workflow-sessions/{id}/export uses, no NoUI-backend round-trip."""
+    import re as _re
+    from compiler.mcp.har_to_tools import HarValidationError
+    from compiler.mcp.server_generator import compile_workflow
+
+    tabby_session_id: str = args.session_id
+    target = getattr(args, "as_target", None) or "mcp"
+    profile_slug = getattr(args, "profile_slug", "") or ""
+    execution_mode = getattr(args, "execution_mode", None) or "tabby"
+    name = args.name or f"recording-{tabby_session_id[:8]}"
+    app_slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "app"
+    server_id = f"{app_slug}-{tabby_session_id[:8]}"
+
+    har = bundle.get("har") or {}
+    clicks = bundle.get("click_events", [])
+    urls = bundle.get("url_events", [])
+    har_entries = len(har.get("log", {}).get("entries", []))
+
+    print(
+        f"Compiling workflow recording → {target} "
+        f"(execution_mode={execution_mode}, {har_entries} HAR entries) …",
+        end=" ",
+        flush=True,
+    )
+    result: dict = {}
+    try:
+        if target in ("mcp", "both"):
+            mcp_dir = str(WORKBENCH_DIR / "mcp_servers" / app_slug / server_id)
+            result["mcp"] = compile_workflow(
+                session_id=tabby_session_id,
+                session_name=name,
+                app_slug=app_slug,
+                tabby_profile_id="",
+                har=har,
+                click_events=clicks,
+                url_events=urls,
+                output_dir=mcp_dir,
+                profile_slug=profile_slug,
+                profile_db_id="",
+                execution_mode=execution_mode,
+            )
+        if target in ("skill", "both"):
+            from compiler.skill.skill_generator import compile_workflow_to_skill
+
+            skill_dir = str(WORKBENCH_DIR / "skills" / app_slug)
+            result["skill"] = compile_workflow_to_skill(
+                session_id=tabby_session_id,
+                session_name=name,
+                app_slug=app_slug,
+                tabby_profile_id="",
+                har=har,
+                click_events=clicks,
+                url_events=urls,
+                output_dir=skill_dir,
+                profile_slug=profile_slug,
+                profile_db_id="",
+                description_override="",
+                execution_mode=execution_mode,
+                start_url=(args.url or ""),
+            )
+        print(_green("done"))
+    except HarValidationError as exc:
+        print()
+        print(_red(f"MCP compilation rejected: {exc}"))
+        return 1
+    except Exception as exc:  # noqa: BLE001 — surface any compile failure
+        print()
+        print(_red(f"Workflow compile failed: {exc}"))
+        return 1
+
+    print()
+    print(_bold("Compiled workflow recording:"))
+    mcp = result.get("mcp") or {}
+    skill = result.get("skill") or {}
+    if mcp:
+        print(f"  MCP server : {_cyan(mcp.get('server_id', server_id))} "
+              f"({len(mcp.get('tools', []))} tool(s))")
+        print(f"  Output     : {WORKBENCH_DIR / 'mcp_servers' / app_slug / server_id}")
+    if skill:
+        print(f"  Skill      : {_cyan(skill.get('skill_id', app_slug))} "
+              f"({len(skill.get('operations', []))} operation(s))")
+        print(f"  Output     : {WORKBENCH_DIR / 'skills' / app_slug}")
+    if not profile_slug:
+        print()
+        print(_yellow("  No --profile-slug given: tools run unauthenticated. For an authenticated"))
+        print(_yellow("  workflow, re-run with --profile-slug <login-profile> (from recording import of a login)."))
+    return 0
+
+
 def cmd_recording_import(args: argparse.Namespace) -> int:
     """Pull a Tabby VNC recording bundle, compile it, and register the Tabby
     App + ServiceProfile — end to end, no NoUI backend round-trip.
@@ -6174,15 +6311,14 @@ def cmd_recording_import(args: argparse.Namespace) -> int:
         print(_red(f"Invalid bundle: {exc}"))
         return 1
 
-    if session_type != "login":
-        print(_red(f"recording import compiles login recordings; got '{session_type}'."))
-        print(_yellow("  Workflow recordings export via the workflow pipeline (not yet wired here)."))
-        return 1
-
     leaks = count_sensitive_unredacted(bundle)
     if leaks:
         print(_red(f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."))
         return 1
+
+    if session_type == "workflow":
+        return _recording_import_workflow(args, bundle)
+    # else: login (compile login DSL + register the Tabby App/ServiceProfile)
 
     # Resolve the login URL (flag wins, else first http(s) URL transition).
     login_url = (args.url or "").strip()

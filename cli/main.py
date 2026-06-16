@@ -5820,11 +5820,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profile", default="", help="(reserved) existing Tabby profile id for workflow auth"
     )
     rec_import = rec_sub.add_parser(
-        "import", help="Pull a Tabby recording bundle and replay it into NoUI ingestion"
+        "import", help="Pull a Tabby recording bundle, compile it, and register the Tabby App + ServiceProfile"
     )
     rec_import.add_argument("session_id", help="Tabby session id that was recorded")
-    rec_import.add_argument("--name", default="", help="Name for the created NoUI session")
-    rec_import.add_argument("--url", default="", help="Login/start URL for the session")
+    rec_import.add_argument("--name", default="", help="Name for the created Tabby app/profile")
+    rec_import.add_argument("--url", default="", help="Login URL (else inferred from the recorded URL flow)")
+    rec_import.add_argument(
+        "--auth-mode",
+        dest="auth_mode",
+        default="agent_token",
+        choices=["agent_token", "platform_jwt"],
+        help="Credential model: agent_token (stored K8s secret, default) or platform_jwt (per-user HITL)",
+    )
+    rec_import.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote the profile STAGING → ACTIVE after registering (required before tool calls)",
+    )
+    rec_import.add_argument(
+        "--as-template",
+        dest="as_template",
+        action="store_true",
+        help="Also emit a tenant-wide Tabby App Template (federated/platform_jwt auto-provisioning)",
+    )
 
     # --- autopilot ---
     ap_parser = sub.add_parser("autopilot", help="Autopilot recording commands")
@@ -6124,25 +6142,27 @@ def _upload_har_multipart(session_id: str, session_type: str, har: dict[str, Any
 
 
 def cmd_recording_import(args: argparse.Namespace) -> int:
-    """Pull a Tabby VNC recording bundle and replay it into NoUI ingestion."""
-    if not _backend_alive():
-        print(_red(f"NoUI backend not reachable at {BACKEND_URL}"))
-        return 1
+    """Pull a Tabby VNC recording bundle, compile it, and register the Tabby
+    App + ServiceProfile — end to end, no NoUI backend round-trip.
 
+    The recorder captures everything the compiler needs (interactions, URL flow,
+    HAR), so we run compiler.login.tabby_draft_generator.generate() directly on
+    the bundle, write the SAME bundle artifact `login register` produces, and
+    delegate to it. That makes the VNC path converge with the existing login
+    pipeline: `login credentials` / `login promote` / `login validate` /
+    `tabby session ensure` all operate on the written bundle, and --promote /
+    --as-template work identically."""
     from compiler.login.tabby_client import get_recording_bundle
-    from compiler.recording.bundle_adapter import (
-        click_payloads,
-        count_sensitive_unredacted,
-        har_log,
-        url_payloads,
-        validate_bundle,
-    )
+    from compiler.recording.bundle_adapter import count_sensitive_unredacted, validate_bundle
+    from compiler.login.tabby_draft_generator import generate
 
     tabby_session_id: str = args.session_id
+    auth_mode = getattr(args, "auth_mode", None) or "agent_token"
+
     print(f"Fetching recording bundle from Tabby ({_cyan(tabby_session_id)}) …", end=" ", flush=True)
     try:
-        token = _resolve_agent_token()
-        bundle = get_recording_bundle(tabby_session_id, token)
+        agent_token = _resolve_agent_token()
+        bundle = get_recording_bundle(tabby_session_id, agent_token)
         session_type = validate_bundle(bundle)
         print(_green("done"))
     except RuntimeError as exc:
@@ -6154,55 +6174,71 @@ def cmd_recording_import(args: argparse.Namespace) -> int:
         print(_red(f"Invalid bundle: {exc}"))
         return 1
 
+    if session_type != "login":
+        print(_red(f"recording import compiles login recordings; got '{session_type}'."))
+        print(_yellow("  Workflow recordings export via the workflow pipeline (not yet wired here)."))
+        return 1
+
     leaks = count_sensitive_unredacted(bundle)
     if leaks:
         print(_red(f"Refusing to import: {leaks} password/OTP value(s) were not redacted in the bundle."))
         return 1
 
+    # Resolve the login URL (flag wins, else first http(s) URL transition).
+    login_url = (args.url or "").strip()
+    if not login_url:
+        for u in bundle.get("url_events", []) or []:
+            to = (u.get("to_url") or "").strip()
+            if to.startswith("http"):
+                login_url = to
+                break
     name = args.name or f"recording-{tabby_session_id[:8]}"
-    if session_type == "login":
-        created = _http("POST", "/login-sessions", {"app_name": name, "login_url": args.url or ""})
-    else:
-        created = _http(
-            "POST", "/workflow-sessions", {"name": name, "start_url": args.url or "", "description": ""}
-        )
-    assert isinstance(created, dict)
-    noui_session_id = created["id"]
+    session = {"id": tabby_session_id, "app_name": name, "login_url": login_url}
 
-    clicks = click_payloads(bundle, noui_session_id, session_type)
-    urls = url_payloads(bundle, noui_session_id, session_type)
+    print(f"Compiling login profile from recording (auth_mode={auth_mode}) …", end=" ", flush=True)
     try:
-        for c in clicks:
-            _http("POST", "/clicks", c)
-        for u in urls:
-            _http("POST", "/url-events", u)
-        _upload_har_multipart(noui_session_id, session_type, har_log(bundle))
-    except RuntimeError as exc:
-        print(_red(f"Replay failed: {exc}"))
+        result = generate(
+            session,
+            bundle.get("click_events", []),
+            bundle.get("url_events", []),
+            har=bundle.get("har"),
+            auth_mode=auth_mode,
+        )
+        print(_green("done"))
+    except Exception as exc:  # noqa: BLE001 — surface any compile failure to the user
+        print()
+        print(_red(f"Compile failed: {exc}"))
         return 1
 
-    # Best-effort completion (endpoint differs per session type).
-    complete_path = (
-        f"/login-sessions/{noui_session_id}/complete"
-        if session_type == "login"
-        else f"/workflow-sessions/{noui_session_id}/complete"
-    )
-    try:
-        _http("POST", complete_path)
-    except RuntimeError:
-        pass
+    validation = result.get("validation", {})
+    if not validation.get("generator_valid", True):
+        print(_red(f"Generated profile is invalid: {validation.get('issues')}"))
+        return 1
 
-    har_entries = len(har_log(bundle).get("log", {}).get("entries", []))
+    app_draft = result.get("application_draft", {})
+    steps = app_draft.get("login_config", {}).get("steps", [])
+    allowlist = app_draft.get("extra_egress_allowlist", []) or []
+    har_entries = len(bundle.get("har", {}).get("log", {}).get("entries", []))
+    print(
+        f"  {len(steps)} login step(s), {len(allowlist)} egress domain(s) "
+        f"(from {har_entries} HAR entries)"
+    )
+
+    # Write the SAME bundle artifact `login register` reads, then delegate to it.
+    # This converges the VNC path with the existing login pipeline: the written
+    # bundle is what login credentials/promote/validate operate on.
+    LOGIN_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    bundle_path = LOGIN_RECORDINGS_DIR / f"noui-{tabby_session_id[:8]}-bundle.json"
+    bundle_path.write_text(json.dumps(result, indent=2) + "\n")
+    print(f"  Compiled bundle: {_cyan(str(bundle_path))}")
     print()
-    print(_bold("Imported recording into NoUI:"))
-    print(f"  NoUI {session_type} session: {_cyan(noui_session_id)}")
-    print(f"  {len(clicks)} interaction(s), {len(urls)} URL transition(s), {har_entries} HAR entry(ies)")
-    print()
-    if session_type == "login":
-        print(f"  Next: {_bold(f'noui login export {noui_session_id}')}")
-    else:
-        print(f"  Next: {_bold(f'noui workflow export {noui_session_id} --as mcp')}")
-    return 0
+
+    reg_args = argparse.Namespace(
+        bundle_file=str(bundle_path),
+        promote=getattr(args, "promote", False),
+        as_template=getattr(args, "as_template", False),
+    )
+    return cmd_login_register(reg_args)
 
 
 def cmd_recording_start(args: argparse.Namespace) -> int:

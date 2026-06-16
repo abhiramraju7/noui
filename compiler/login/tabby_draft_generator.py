@@ -226,6 +226,49 @@ def _analyze_har(har: dict | None) -> dict[str, Any]:
     return result
 
 
+# Common two-part public suffixes whose registrable domain is the last 3 labels.
+_COMPOUND_TLDS = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk",
+    "com.br", "com.au", "com.mx", "com.ar", "com.tr", "com.cn", "com.sg",
+    "co.jp", "co.in", "co.za", "co.nz", "co.kr",
+}
+
+
+def _registrable_suffix(host: str) -> str | None:
+    """Convert a hostname to a leading-dot egress suffix covering its subdomains
+    (``www.expedia.com`` -> ``.expedia.com``).
+
+    Uses a small compound-TLD table for the common two-part suffixes
+    (``.co.uk``); everything else collapses to the last two labels. Heuristic,
+    not a full public-suffix list — the goal is broad-but-scoped allowlist
+    coverage, and ``extra_egress_allowlist`` stays editable for tightening.
+    """
+    host = (host or "").strip().lower().split(":")[0].rstrip(".")
+    if not host or host == "localhost":
+        return None
+    if all(ch.isdigit() or ch == "." for ch in host):  # bare IP
+        return None
+    labels = host.split(".")
+    if len(labels) < 2:
+        return None
+    last_two = ".".join(labels[-2:])
+    registrable = ".".join(labels[-3:]) if last_two in _COMPOUND_TLDS and len(labels) >= 3 else last_two
+    return f".{registrable}"
+
+
+def egress_allowlist_from_domains(domains: list[str] | None) -> list[str]:
+    """Derive a deduplicated egress allowlist (leading-dot suffix patterns) from
+    domains observed in a recording's HAR. Feeds ``extra_egress_allowlist`` so
+    the compiled app runs under egress enforce without per-vendor kubectl edits.
+    """
+    out: list[str] = []
+    for host in domains or []:
+        suffix = _registrable_suffix(host)
+        if suffix and suffix not in out:
+            out.append(suffix)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # App Template payload (tenant-wide auto-provisioning)
 # ---------------------------------------------------------------------------
@@ -290,6 +333,9 @@ def build_app_template_payload(
         "export_policy": export_policy,
         "browser_policy": application_draft.get("browser_policy")
         or {"clipboard": False, "downloads": False, "file_chooser": False},
+        # Cloned onto every auto-provisioned app so per-user sessions inherit the
+        # vendor's auth/CDN domains in their egress allowlist.
+        "extra_egress_allowlist": application_draft.get("extra_egress_allowlist") or [],
         "notification_config": application_draft.get("notification_config") or {},
         # NOTE: execute_enabled is intentionally NOT emitted — the App Template
         # DTO rejects the field and returns 400 (A4). The auto-provisioned app
@@ -336,6 +382,15 @@ def merge_template_export_policy(existing_template: dict, new_payload: dict) -> 
     the new payload — those are per-login-flow, not additive.
     """
     merged = dict(new_payload)
+
+    # Top-level extra_egress_allowlist accumulates across recordings (union).
+    merged_extra = _union_scalars(
+        (existing_template or {}).get("extra_egress_allowlist"),
+        new_payload.get("extra_egress_allowlist"),
+    )
+    if merged_extra:
+        merged["extra_egress_allowlist"] = merged_extra
+
     old_ep = (existing_template or {}).get("export_policy") or {}
     new_ep = dict(merged.get("export_policy") or {})
 
@@ -757,6 +812,9 @@ def generate(
     application_draft: dict[str, Any] = {
         "name": app_name,
         "target_urls": [origin],
+        # Auth/CDN domains observed in the HAR, as egress suffix patterns, so the
+        # compiled app's egress allowlist covers the full login flow under enforce.
+        "extra_egress_allowlist": egress_allowlist_from_domains(har_analysis["auth_domains"]),
         "login_config": login_config,
         "keepalive_config": keepalive_config,
         "export_policy": export_policy,

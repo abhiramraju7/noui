@@ -9,7 +9,9 @@ import pytest
 from compiler.login.tabby_draft_generator import (
     _analyze_har,
     build_app_template_payload,
+    egress_allowlist_from_domains,
     generate,
+    merge_template_export_policy,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -338,6 +340,56 @@ class TestGenerate:
     def test_validation_generator_valid(self) -> None:
         result = generate(_session(), [], [])
         assert "generator_valid" in result["validation"]
+
+
+# ── extra_egress_allowlist (egress loop closure) ───────────────────────────────
+
+
+class TestEgressAllowlist:
+    def test_helper_collapses_to_registrable_suffix(self) -> None:
+        out = egress_allowlist_from_domains(["www.expedia.com", "c.trvl-media.com", "www.expedia.com"])
+        assert out == [".expedia.com", ".trvl-media.com"]
+
+    def test_helper_handles_compound_tld(self) -> None:
+        assert egress_allowlist_from_domains(["login.acme.co.uk"]) == [".acme.co.uk"]
+
+    def test_helper_skips_ip_localhost_and_bare(self) -> None:
+        assert egress_allowlist_from_domains(["127.0.0.1", "localhost", "single", "", None]) == []
+
+    def _har_two_domains(self) -> dict:
+        return {
+            "log": {
+                "entries": [
+                    {
+                        "request": {"url": "https://www.expedia.com/login", "headers": []},
+                        "response": {"headers": []},
+                    },
+                    {
+                        "request": {"url": "https://c.trvl-media.com/asset.png", "headers": []},
+                        "response": {"headers": []},
+                    },
+                ]
+            }
+        }
+
+    def test_application_draft_populated_from_har(self) -> None:
+        result = generate(_session(), [], [], har=self._har_two_domains())
+        allowlist = result["application_draft"]["extra_egress_allowlist"]
+        assert ".expedia.com" in allowlist
+        assert ".trvl-media.com" in allowlist
+
+    def test_template_payload_carries_allowlist(self) -> None:
+        result = generate(_session(), [], [], har=self._har_two_domains())
+        template = build_app_template_payload(
+            result["application_draft"], result["service_profile_draft"]
+        )
+        assert ".expedia.com" in template["extra_egress_allowlist"]
+
+    def test_merge_unions_allowlist_across_recordings(self) -> None:
+        existing = {"extra_egress_allowlist": [".okta.com"]}
+        new_payload = {"extra_egress_allowlist": [".expedia.com"]}
+        merged = merge_template_export_policy(existing, new_payload)
+        assert set(merged["extra_egress_allowlist"]) == {".okta.com", ".expedia.com"}
 
 
 # ── _analyze_har ──────────────────────────────────────────────────────────────

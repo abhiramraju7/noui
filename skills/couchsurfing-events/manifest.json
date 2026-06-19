@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "skill_id": "couchsurfing-events",
+  "app": {"name": "Couchsurfing Events", "slug": "couchsurfing-events"},
+  "workflow": {"id": "couchsurfing-events", "name": "Couchsurfing Events"},
+  "auth": {"requires_auth": true, "profile_slug": "couchsurfing", "profile_db_id": null, "strategy": "tabby_execute", "auth_plan_file": "auth_plan.json"},
+  "runtime": {"type": "claude-code-skill", "entrypoint": "SKILL.md", "operation_style": "subprocess-cli", "transport": "execute", "python": ">=3.11"},
+  "operations": [
+    {"name": "list_public_events", "description": "List publicly linked Couchsurfing events through Tabby.", "module": "operations/list_public_events.py", "entry": "execute", "args": [{"name": "query", "type": "string", "required": false, "default": ""}, {"name": "limit", "type": "integer", "required": false, "default": 20}, {"name": "profile_slug", "type": "string", "required": false, "default": "couchsurfing"}]},
+    {"name": "get_event_details", "description": "Read a public Couchsurfing event page through Tabby.", "module": "operations/get_event_details.py", "entry": "execute", "args": [{"name": "url", "type": "string", "required": true}, {"name": "profile_slug", "type": "string", "required": false, "default": "couchsurfing"}]}
+  ],
+  "artifacts": {"skill_file": "SKILL.md", "api_docs_file": "API.md"},
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

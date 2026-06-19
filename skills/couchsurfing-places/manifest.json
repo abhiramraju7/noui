@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "skill_id": "couchsurfing-places",
+  "app": {"name": "Couchsurfing Places", "slug": "couchsurfing-places"},
+  "workflow": {"id": "couchsurfing-places", "name": "Couchsurfing Places"},
+  "auth": {"requires_auth": true, "profile_slug": "couchsurfing", "profile_db_id": null, "strategy": "tabby_execute", "auth_plan_file": "auth_plan.json"},
+  "runtime": {"type": "claude-code-skill", "entrypoint": "SKILL.md", "operation_style": "subprocess-cli", "transport": "execute", "python": ">=3.11"},
+  "operations": [
+    {"name": "search_places", "description": "Search public Couchsurfing places through Tabby.", "module": "operations/search_places.py", "entry": "execute", "args": [{"name": "query", "type": "string", "required": true}, {"name": "limit", "type": "integer", "required": false, "default": 10}, {"name": "profile_slug", "type": "string", "required": false, "default": "couchsurfing"}]},
+    {"name": "list_popular_places", "description": "List public Couchsurfing places through Tabby.", "module": "operations/list_popular_places.py", "entry": "execute", "args": [{"name": "limit", "type": "integer", "required": false, "default": 20}, {"name": "profile_slug", "type": "string", "required": false, "default": "couchsurfing"}]}
+  ],
+  "artifacts": {"skill_file": "SKILL.md", "api_docs_file": "API.md"},
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

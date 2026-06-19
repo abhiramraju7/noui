@@ -1,0 +1,58 @@
+{
+  "schema_version": "1",
+  "skill_id": "jumeirah-search",
+  "app": {"name": "Jumeirah Search", "slug": "jumeirah-search"},
+  "workflow": {"id": "jumeirah-search", "name": "Jumeirah Search"},
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "jumeirah-hotels",
+    "profile_db_id": null,
+    "strategy": "tabby_execute",
+    "auth_plan_file": "auth_plan.json"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "transport": "execute",
+    "python": ">=3.11"
+  },
+  "operations": [
+    {
+      "name": "search_destinations",
+      "description": "Search Jumeirah cities and neighbourhoods through Tabby-routed execute/fetch.",
+      "module": "operations/search_destinations.py",
+      "entry": "execute",
+      "args": [
+        {"name": "query", "type": "string", "required": true},
+        {"name": "limit", "type": "integer", "required": false, "default": 10},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "jumeirah-hotels"}
+      ]
+    },
+    {
+      "name": "search_hotels",
+      "description": "Search Jumeirah hotels by destination and dates through Tabby-routed execute/fetch.",
+      "module": "operations/search_hotels.py",
+      "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "rooms", "type": "integer", "required": false, "default": 1},
+        {"name": "adults", "type": "integer", "required": false, "default": 2},
+        {"name": "children", "type": "integer", "required": false, "default": 0},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "jumeirah-hotels"}
+      ]
+    }
+  ],
+  "artifacts": {
+    "skill_file": "SKILL.md",
+    "api_docs_file": "API.md",
+    "files": [
+      "SKILL.md", "API.md", "manifest.json", "auth_plan.json",
+      "operations/__init__.py", "operations/search_destinations.py", "operations/search_hotels.py",
+      "noui_runtime/__init__.py", "noui_runtime/auth.py", "noui_runtime/execute.py", "noui_runtime/jumeirah.py"
+    ]
+  },
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

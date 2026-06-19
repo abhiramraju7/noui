@@ -1,0 +1,67 @@
+{
+  "schema_version": "1",
+  "skill_id": "sonder",
+  "app": {"name": "Sonder Stays", "slug": "sonder"},
+  "workflow": {"id": "sonder", "name": "Sonder Stays"},
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "sonder",
+    "profile_db_id": null,
+    "strategy": "tabby_execute",
+    "auth_plan_file": "auth_plan.json"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "transport": "execute",
+    "python": ">=3.11"
+  },
+  "operations": [
+    {
+      "name": "get_stay_details",
+      "description": "Get normalized Sonder stay details through Tabby-routed execute/fetch.",
+      "module": "operations/get_stay_details.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "stay_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    },
+    {
+      "name": "list_stay_amenities",
+      "description": "List public Sonder stay amenities through Tabby-routed execute/fetch.",
+      "module": "operations/list_stay_amenities.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "stay_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    },
+    {
+      "name": "check_availability",
+      "description": "Check public Sonder stay availability and quoted total through Tabby-routed execute/fetch.",
+      "module": "operations/check_availability.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "stay_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    }
+  ],
+  "artifacts": {
+    "skill_file": "SKILL.md", "api_docs_file": "API.md",
+    "files": [
+      "SKILL.md", "API.md", "manifest.json", "auth_plan.json",
+      "operations/__init__.py", "operations/get_stay_details.py", "operations/list_stay_amenities.py", "operations/check_availability.py",
+      "noui_runtime/__init__.py", "noui_runtime/auth.py", "noui_runtime/execute.py", "noui_runtime/sonder.py"
+    ]
+  },
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

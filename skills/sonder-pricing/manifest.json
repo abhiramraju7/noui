@@ -1,0 +1,64 @@
+{
+  "schema_version": "1",
+  "skill_id": "sonder-pricing",
+  "app": {"name": "Sonder Pricing", "slug": "sonder-pricing"},
+  "workflow": {"id": "sonder-pricing", "name": "Sonder Pricing"},
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "sonder",
+    "profile_db_id": null,
+    "strategy": "tabby_execute",
+    "auth_plan_file": "auth_plan.json"
+  },
+  "runtime": {
+    "type": "claude-code-skill", "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli", "transport": "execute", "python": ">=3.11"
+  },
+  "operations": [
+    {
+      "name": "get_price_breakdown",
+      "description": "Get a Sonder stay's detected public booking-page rates through Tabby-routed execute/fetch.",
+      "module": "operations/get_price_breakdown.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "stay_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    },
+    {
+      "name": "compare_stay_prices",
+      "description": "Compare available Sonder stays by final public price through Tabby-routed execute/fetch.",
+      "module": "operations/compare_stay_prices.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "limit", "type": "integer", "required": false, "default": 10},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    },
+    {
+      "name": "list_discounted_stays",
+      "description": "List Sonder stays meeting a minimum advertised discount through Tabby-routed execute/fetch.",
+      "module": "operations/list_discounted_stays.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "minimum_discount", "type": "number", "required": false, "default": 20},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "sonder"}
+      ]
+    }
+  ],
+  "artifacts": {
+    "skill_file": "SKILL.md", "api_docs_file": "API.md",
+    "files": [
+      "SKILL.md", "API.md", "manifest.json", "auth_plan.json",
+      "operations/__init__.py", "operations/get_price_breakdown.py", "operations/compare_stay_prices.py", "operations/list_discounted_stays.py",
+      "noui_runtime/__init__.py", "noui_runtime/auth.py", "noui_runtime/execute.py", "noui_runtime/sonder.py"
+    ]
+  },
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

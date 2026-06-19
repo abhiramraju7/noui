@@ -1,0 +1,13 @@
+{
+  "profile_slug": "oberoi-hotels",
+  "profile_db_id": null,
+  "strategy": "tabby_credentials",
+  "target_domains": ["www.oberoihotels.com", "res.oberoihotels.com"],
+  "required_auth": {"headers": [], "cookies": []},
+  "observed_workflow_headers": {},
+  "tabby_export": {
+    "credential_types": {"headers": [], "cookies": []},
+    "runtime_identifier": "oberoi-hotels"
+  },
+  "fallbacks": []
+}

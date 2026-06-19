@@ -1,0 +1,67 @@
+{
+  "schema_version": "1",
+  "skill_id": "oberoi-hotels",
+  "app": {"name": "Oberoi Hotels", "slug": "oberoi-hotels"},
+  "workflow": {"id": "oberoi-hotels", "name": "Oberoi Hotels"},
+  "auth": {
+    "requires_auth": true,
+    "profile_slug": "oberoi-hotels",
+    "profile_db_id": null,
+    "strategy": "tabby_execute",
+    "auth_plan_file": "auth_plan.json"
+  },
+  "runtime": {
+    "type": "claude-code-skill",
+    "entrypoint": "SKILL.md",
+    "operation_style": "subprocess-cli",
+    "transport": "execute",
+    "python": ">=3.11"
+  },
+  "operations": [
+    {
+      "name": "get_hotel_details",
+      "description": "Get normalized Oberoi hotel details through Tabby-routed execute/fetch.",
+      "module": "operations/get_hotel_details.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "hotel_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "oberoi-hotels"}
+      ]
+    },
+    {
+      "name": "list_hotel_amenities",
+      "description": "List public Oberoi hotel amenities through Tabby-routed execute/fetch.",
+      "module": "operations/list_hotel_amenities.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "hotel_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "oberoi-hotels"}
+      ]
+    },
+    {
+      "name": "check_availability",
+      "description": "Check public Oberoi hotel availability and quoted total through Tabby-routed execute/fetch.",
+      "module": "operations/check_availability.py", "entry": "execute",
+      "args": [
+        {"name": "destination", "type": "string", "required": true},
+        {"name": "hotel_id", "type": "string", "required": true},
+        {"name": "check_in", "type": "string", "required": true},
+        {"name": "check_out", "type": "string", "required": true},
+        {"name": "profile_slug", "type": "string", "required": false, "default": "oberoi-hotels"}
+      ]
+    }
+  ],
+  "artifacts": {
+    "skill_file": "SKILL.md", "api_docs_file": "API.md",
+    "files": [
+      "SKILL.md", "API.md", "manifest.json", "auth_plan.json",
+      "operations/__init__.py", "operations/get_hotel_details.py", "operations/list_hotel_amenities.py", "operations/check_availability.py",
+      "noui_runtime/__init__.py", "noui_runtime/auth.py", "noui_runtime/execute.py", "noui_runtime/oberoi.py"
+    ]
+  },
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

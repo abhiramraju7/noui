@@ -1,0 +1,10 @@
+{
+  "profile_slug": "trip-com",
+  "profile_db_id": null,
+  "strategy": "tabby_credentials",
+  "target_domains": ["trip.com", "www.trip.com"],
+  "required_auth": {"headers": [], "cookies": []},
+  "observed_workflow_headers": {},
+  "tabby_export": {"credential_types": {"headers": [], "cookies": []}, "runtime_identifier": "trip-com"},
+  "fallbacks": []
+}

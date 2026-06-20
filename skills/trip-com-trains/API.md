@@ -1,0 +1,3 @@
+# Trip.com Trains API
+
+`search_trains` accepts origin, destination, and departure date, adults, limit, and an optional Tabby profile slug. It returns the official source URL, normalized public records, visible prices, and a bounded page summary.

@@ -320,7 +320,20 @@ def _har_requests(har_data: dict[str, Any], limit: int = 30) -> list[dict[str, A
         if not url:
             continue
         mime_type = str((response.get("content") or {}).get("mimeType") or "")
-        lowered = url.lower()
+        parsed_url = urllib.parse.urlsplit(url)
+        safe_query = urllib.parse.urlencode(
+            [
+                (
+                    key,
+                    "<redacted>"
+                    if re.search(r"token|key|auth|session|signature", key, re.I)
+                    else value,
+                )
+                for key, value in urllib.parse.parse_qsl(parsed_url.query, keep_blank_values=True)
+            ]
+        )
+        safe_url = urllib.parse.urlunsplit((*parsed_url[:3], safe_query, parsed_url.fragment))
+        lowered = safe_url.lower()
         score = 0
         if "json" in mime_type:
             score += 8
@@ -335,7 +348,7 @@ def _har_requests(har_data: dict[str, Any], limit: int = 30) -> list[dict[str, A
                 score,
                 {
                     "method": request.get("method", "GET"),
-                    "url": url,
+                    "url": safe_url,
                     "status": response.get("status"),
                     "mime_type": mime_type,
                 },

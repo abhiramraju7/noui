@@ -126,7 +126,7 @@ def test_har_metadata_prioritizes_data_endpoints() -> None:
                     {
                         "request": {
                             "method": "POST",
-                            "url": "https://api.example/graphql/search",
+                            "url": "https://api.example/graphql/search?session_token=secret&locale=en",
                         },
                         "response": {
                             "status": 200,
@@ -141,7 +141,7 @@ def test_har_metadata_prioritizes_data_endpoints() -> None:
     assert requests == [
         {
             "method": "POST",
-            "url": "https://api.example/graphql/search",
+            "url": "https://api.example/graphql/search?session_token=%3Credacted%3E&locale=en",
             "status": 200,
             "mime_type": "application/json",
         }

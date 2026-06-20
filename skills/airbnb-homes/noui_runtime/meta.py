@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import html as html_module
 import json
+import os
 import re
 import urllib.parse
 from datetime import date
 from typing import Any
 
-from noui_runtime.execute import execute_fetch
+import httpx
+
+from noui_runtime.auth import resolve_auth
+from noui_runtime.execute import execute_browser, execute_fetch
 
 PLATFORM = "Airbnb"
 BASE_URL = "https://www.airbnb.com"
 PROFILE = "airbnb"
 MODE = "homes"
-ALLOWED_HOSTS = {"airbnb.com", "www.airbnb.com"}
+ALLOWED_HOSTS = {"airbnb.com", "www.airbnb.com", "airbnb.co.in", "www.airbnb.co.in"}
 
 
 def _text(value: str) -> str:
@@ -289,6 +293,158 @@ def _prices(page: str) -> list[dict[str, Any]]:
     return sorted(values.values(), key=lambda item: item["amount"])[:50]
 
 
+def _summary_records(summary: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    needle = query.lower()
+    for link in summary.get("links", []):
+        label = str(link.get("text") or "").strip()
+        url = str(link.get("href") or "")
+        if not label or not url:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc and parsed.netloc not in ALLOWED_HOSTS:
+            continue
+        if needle and needle not in f"{label} {url}".lower():
+            continue
+        found[url] = {"id": url, "name": label[:240], "url": url}
+    return list(found.values())
+
+
+def _har_requests(har_data: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
+    entries = har_data.get("har", {}).get("log", {}).get("entries", [])
+    requests: list[tuple[int, dict[str, Any]]] = []
+    for entry in entries:
+        request = entry.get("request", {})
+        response = entry.get("response", {})
+        url = str(request.get("url") or "")
+        if not url:
+            continue
+        mime_type = str((response.get("content") or {}).get("mimeType") or "")
+        lowered = url.lower()
+        score = 0
+        if "json" in mime_type:
+            score += 8
+        if any(token in lowered for token in ("graphql", "/api/", "search", "availability")):
+            score += 5
+        if request.get("method") == "POST":
+            score += 2
+        if any(token in mime_type for token in ("font", "image", "css", "javascript")):
+            score -= 10
+        requests.append(
+            (
+                score,
+                {
+                    "method": request.get("method", "GET"),
+                    "url": url,
+                    "status": response.get("status"),
+                    "mime_type": mime_type,
+                },
+            )
+        )
+    requests.sort(key=lambda item: item[0], reverse=True)
+    return [item for score, item in requests if score >= 0][:limit]
+
+
+async def _browser_snapshot(url: str, profile_slug: str, query: str) -> dict[str, Any]:
+    har_started = False
+    har_data: dict[str, Any] = {}
+    try:
+        await execute_browser(profile_slug, "har_start")
+        har_started = True
+    except RuntimeError:
+        pass
+    try:
+        await execute_browser(profile_slug, "navigate", {"url": url}, timeout_ms=60_000)
+        try:
+            await execute_browser(
+                profile_slug,
+                "wait_for_selector",
+                {"selector": "body"},
+                timeout_ms=15_000,
+            )
+            await execute_browser(profile_slug, "scroll_page", {"dy": 500})
+        except RuntimeError:
+            pass
+        summary = await execute_browser(profile_slug, "get_page_summary")
+    finally:
+        if har_started:
+            try:
+                har_data = await execute_browser(profile_slug, "har_stop") or {}
+            except RuntimeError:
+                pass
+    return {
+        "title": summary.get("title", ""),
+        "url": summary.get("url", url),
+        "records": _summary_records(summary, query),
+        "summary": " ".join(
+            str(item.get("text") or "")
+            for group in ("headings", "links", "buttons")
+            for item in summary.get(group, [])
+            if item.get("text")
+        )[:2000],
+        "network_requests": _har_requests(har_data),
+    }
+
+
+async def _direct_fetch(url: str) -> str:
+    headers = {
+        "accept": "text/html,application/xhtml+xml",
+        "user-agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        ),
+    }
+    if os.environ.get("NOUI_HTTP_WITH_TABBY_CREDENTIALS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        headers.update(await resolve_auth())
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
+        response = await client.get(url, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Direct HTTP returned {response.status_code} for {url}")
+    if not response.text.strip():
+        raise RuntimeError(f"Direct HTTP returned an empty page for {url}")
+    return response.text
+
+
+def _page_result(
+    page: str,
+    *,
+    source_url: str,
+    lookup: str,
+    limit: int,
+    transport: str,
+    warnings: list[str],
+) -> dict[str, Any]:
+    structured = _json_records(page)
+    if lookup:
+        needle = lookup.lower()
+        structured = [
+            item
+            for item in structured
+            if needle
+            in f"{item.get('name', '')} {item.get('url', '')} {item.get('description', '')}".lower()
+        ]
+    records = structured or _link_records(page, lookup)
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", page, flags=re.I | re.S)
+    return {
+        "platform": PLATFORM,
+        "mode": MODE,
+        "transport": transport,
+        "source_url": source_url,
+        "title": _text(title_match.group(1)) if title_match else "",
+        "results_count": len(records[: max(1, limit)]),
+        "results": records[: max(1, limit)],
+        "prices": _prices(page),
+        "public_summary": _text(page)[:2000],
+        "network_requests": [],
+        "warnings": warnings,
+        "note": "Public prices are snapshots and may change on the booking provider.",
+    }
+
+
 async def run_public_search(
     *,
     query: str = "",
@@ -303,6 +459,7 @@ async def run_public_search(
     url: str = "",
     adults: int = 1,
     limit: int = 20,
+    transport: str = "auto",
     profile_slug: str = PROFILE,
 ) -> dict[str, Any]:
     if adults < 1:
@@ -325,27 +482,71 @@ async def run_public_search(
             dropoff=dropoff,
             adults=adults,
         )
-    page = await _fetch(source_url, profile_slug)
     lookup = destination or query
-    structured = _json_records(page)
-    if lookup:
-        needle = lookup.lower()
-        structured = [
-            item
-            for item in structured
-            if needle
-            in f"{item.get('name', '')} {item.get('url', '')} {item.get('description', '')}".lower()
-        ]
-    records = structured or _link_records(page, lookup)
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", page, flags=re.I | re.S)
-    return {
-        "platform": PLATFORM,
-        "mode": MODE,
-        "source_url": source_url,
-        "title": _text(title_match.group(1)) if title_match else "",
-        "results_count": len(records[: max(1, limit)]),
-        "results": records[: max(1, limit)],
-        "prices": _prices(page),
-        "public_summary": _text(page)[:2000],
-        "note": "Public meta-search prices are snapshots and may change on the booking provider.",
-    }
+    if transport not in {"auto", "fetch", "browser", "http"}:
+        raise ValueError("transport must be auto, fetch, browser, or http")
+
+    warnings: list[str] = []
+    fetch_result: dict[str, Any] | None = None
+    if transport in {"auto", "fetch"}:
+        try:
+            page = await _fetch(source_url, profile_slug)
+            fetch_result = _page_result(
+                page,
+                source_url=source_url,
+                lookup=lookup,
+                limit=limit,
+                transport="execute_fetch",
+                warnings=warnings,
+            )
+            if fetch_result["results"] or transport == "fetch":
+                return fetch_result
+            warnings.append("execute/fetch returned no normalized records")
+        except RuntimeError as exc:
+            if transport == "fetch":
+                raise
+            warnings.append(str(exc))
+
+    if transport in {"auto", "browser"}:
+        try:
+            browser = await _browser_snapshot(source_url, profile_slug, lookup)
+            records = browser["records"][: max(1, limit)]
+            return {
+                "platform": PLATFORM,
+                "mode": MODE,
+                "transport": "execute_browser",
+                "source_url": browser["url"],
+                "title": browser["title"],
+                "results_count": len(records),
+                "results": records,
+                "prices": _prices(browser["summary"]),
+                "public_summary": browser["summary"],
+                "network_requests": browser["network_requests"],
+                "warnings": warnings,
+                "note": "Browser navigation was used because the data path was client-rendered.",
+            }
+        except RuntimeError as exc:
+            if transport == "browser":
+                raise
+            warnings.append(str(exc))
+
+    if transport in {"auto", "http"}:
+        try:
+            page = await _direct_fetch(source_url)
+            return _page_result(
+                page,
+                source_url=source_url,
+                lookup=lookup,
+                limit=limit,
+                transport="http",
+                warnings=warnings,
+            )
+        except (RuntimeError, httpx.HTTPError) as exc:
+            if transport == "http":
+                raise
+            warnings.append(str(exc))
+
+    if fetch_result is not None:
+        fetch_result["warnings"] = warnings
+        return fetch_result
+    raise RuntimeError("All transports failed: " + " | ".join(warnings))

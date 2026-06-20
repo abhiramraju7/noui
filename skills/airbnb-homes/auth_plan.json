@@ -2,7 +2,7 @@
   "profile_slug": "airbnb",
   "profile_db_id": null,
   "strategy": "tabby_credentials",
-  "target_domains": ["airbnb.com", "www.airbnb.com"],
+  "target_domains": ["www.airbnb.com", "www.airbnb.co.in"],
   "required_auth": {"headers": [], "cookies": []},
   "observed_workflow_headers": {},
   "tabby_export": {"credential_types": {"headers": [], "cookies": []}, "runtime_identifier": "airbnb"},

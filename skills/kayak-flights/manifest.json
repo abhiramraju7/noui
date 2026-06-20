@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "skill_id": "kayak-flights",
+  "app": {"name": "Kayak Flights", "slug": "kayak-flights"},
+  "workflow": {"id": "kayak-flights", "name": "Kayak Flights"},
+  "auth": {"requires_auth": true, "profile_slug": "kayak", "profile_db_id": null, "strategy": "tabby_execute", "auth_plan_file": "auth_plan.json"},
+  "runtime": {"type": "claude-code-skill", "entrypoint": "SKILL.md", "operation_style": "subprocess-cli", "transport": "execute", "python": ">=3.11"},
+  "operations": [{
+    "name": "search_flights",
+    "description": "Search public Kayak flight results and fares through Tabby execute/fetch.",
+    "module": "operations/run.py",
+    "entry": "execute",
+    "args": [
+      {"name": "query", "type": "string", "required": false, "default": ""},
+      {"name": "origin", "type": "string", "required": false, "default": ""},
+      {"name": "destination", "type": "string", "required": false, "default": ""},
+      {"name": "departure", "type": "string", "required": false, "default": ""},
+      {"name": "return_date", "type": "string", "required": false, "default": ""},
+      {"name": "check_in", "type": "string", "required": false, "default": ""},
+      {"name": "check_out", "type": "string", "required": false, "default": ""},
+      {"name": "pickup", "type": "string", "required": false, "default": ""},
+      {"name": "dropoff", "type": "string", "required": false, "default": ""},
+      {"name": "url", "type": "string", "required": false, "default": ""},
+      {"name": "adults", "type": "integer", "required": false, "default": 1},
+      {"name": "limit", "type": "integer", "required": false, "default": 20},
+      {"name": "profile_slug", "type": "string", "required": false, "default": "kayak"}
+    ]
+  }],
+  "artifacts": {"skill_file": "SKILL.md", "api_docs_file": "API.md"},
+  "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}
+}

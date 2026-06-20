@@ -1,0 +1,10 @@
+{
+  "profile_slug": "kayak",
+  "profile_db_id": null,
+  "strategy": "tabby_credentials",
+  "target_domains": ["www.kayak.com", "www.kayak.co.in"],
+  "required_auth": {"headers": [], "cookies": []},
+  "observed_workflow_headers": {},
+  "tabby_export": {"credential_types": {"headers": [], "cookies": []}, "runtime_identifier": "kayak"},
+  "fallbacks": []
+}

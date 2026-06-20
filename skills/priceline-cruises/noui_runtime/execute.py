@@ -352,3 +352,42 @@ async def execute_fetch(
         return json.loads(raw_body) if raw_body else {}
     except (ValueError, TypeError):
         return {"status": status, "text": raw_body}
+
+
+async def execute_browser(
+    profile_id: str,
+    command: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout_ms: int = 30_000,
+) -> Any:
+    """Run a supported Playwright command through Tabby's browser worker."""
+    token = await _get_tabby_bearer()
+    payload = {
+        "profile_id": profile_id,
+        "command": command,
+        "params": params or {},
+        "timeout_ms": timeout_ms,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{_tabby_api_host()}/execute/browser",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout_ms / 1000 + 5,
+        )
+    if resp.status_code == 429:
+        raise RuntimeError(f"Rate limited by Tabby browser API: {resp.text}")
+    if _is_no_session(resp):
+        raise RuntimeError(
+            f'No healthy Tabby session for profile "{profile_id}". '
+            "Run `tabby session ensure --profile <slug>` or check the admin UI."
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Tabby execute/browser failed ({resp.status_code}): {resp.text[:500]}")
+    data = resp.json()
+    if not data.get("success", False):
+        raise RuntimeError(
+            f"Browser command {command!r} failed: {data.get('error', 'unknown error')}"
+        )
+    return data.get("data")

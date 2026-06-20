@@ -67,9 +67,16 @@ def _generated_module(env: dict):
             "TABBY_API_URL",
             "TABBY_API_HOST",
             "NOUI_ENV_FILE",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
         ):
             os.environ.pop(key, None)
         os.environ.update(env)
+        os.environ["NOUI_ENV_FILE"] = os.path.join(tempfile.gettempdir(), "noui_missing_test_env")
         g: dict = {"__file__": os.path.join(tempfile.gettempdir(), "noui_gen_execute_test.py")}
         exec(compile(_generated(), "<generated>", "exec"), g)
         yield g

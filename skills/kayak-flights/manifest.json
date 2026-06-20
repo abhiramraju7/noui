@@ -26,6 +26,30 @@
       {"name": "transport", "type": "string", "required": false, "default": "auto"},
       {"name": "profile_slug", "type": "string", "required": false, "default": "kayak"}
     ]
+  }, {
+    "name": "browser_kayak_flights",
+    "description": "Inspect pages, run bounded browser actions, capture screenshots, and discover network endpoints through Tabby.",
+    "module": "operations/browser.py",
+    "entry": "execute",
+    "args": [
+      {"name": "url", "type": "string", "required": true},
+      {"name": "mode", "type": "string", "required": false, "default": "inspect"},
+      {"name": "actions_json", "type": "string", "required": false, "default": "[]"},
+      {"name": "screenshot", "type": "boolean", "required": false, "default": false},
+      {"name": "allow_transactional", "type": "boolean", "required": false, "default": false},
+      {"name": "profile_slug", "type": "string", "required": false, "default": "kayak"}
+    ]
+  }, {
+    "name": "snapshot_kayak_flights",
+    "description": "Capture, save, and compare normalized public result and price snapshots.",
+    "module": "operations/snapshot.py",
+    "entry": "execute",
+    "args": [
+      {"name": "search_json", "type": "string", "required": true},
+      {"name": "previous", "type": "string", "required": false, "default": ""},
+      {"name": "output", "type": "string", "required": false, "default": ""},
+      {"name": "profile_slug", "type": "string", "required": false, "default": "kayak"}
+    ]
   }],
   "artifacts": {"skill_file": "SKILL.md", "api_docs_file": "API.md"},
   "generation": {"generator": "noui", "generator_version": "v2-skill-sample"}

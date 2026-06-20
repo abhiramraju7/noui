@@ -1,0 +1,10 @@
+{
+  "profile_slug": "hotels-com",
+  "profile_db_id": null,
+  "strategy": "tabby_credentials",
+  "target_domains": ["hotels.com", "www.hotels.com"],
+  "required_auth": {"headers": [], "cookies": []},
+  "observed_workflow_headers": {},
+  "tabby_export": {"credential_types": {"headers": [], "cookies": []}, "runtime_identifier": "hotels-com"},
+  "fallbacks": []
+}

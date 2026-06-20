@@ -5,12 +5,16 @@ description: Use when the user wants to search Booking.com hotels, inspect publi
 
 # Booking.com Stays
 
-Search Booking.com public hotel pages through Tabby `POST /execute/fetch`. Browser cookies and networking remain inside the Tabby session; never use CDP, extract credentials, or fall back to direct target-site HTTP.
+Search Booking.com public hotel pages through NoUI's hybrid runtime. Browser cookies and networking remain inside the Tabby session; never connect to a client-side CDP socket or extract credentials by default.
+
+The default `auto` transport first tries `/execute/fetch`, then uses `/execute/browser` navigation with HAR capture for client-rendered pages, and finally tries guarded public HTTP. Force one path with `--transport fetch|browser|http`. Browser execution is Tabby-routed Playwright, not a client-side CDP connection.
 
 Requires a HEALTHY `booking-com` profile plus Tabby API credentials.
 
 ```bash
 python operations/run.py --destination "London" --check-in 2026-08-10 --check-out 2026-08-12 --adults 2
 ```
+
+Browser fallback returns a bounded page summary plus discovered network request metadata. Use those request URLs to generalize stable JSON/GraphQL calls back onto `/execute/fetch`.
 
 Treat prices as public snapshots. Confirm taxes, fees, availability, and cancellation terms on the selected booking provider before purchase.

@@ -34,6 +34,12 @@ def main() -> int:
     parser.add_argument("--url", default="")
     parser.add_argument("--adults", type=int, default=1)
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument(
+        "--transport",
+        choices=("auto", "fetch", "browser", "http"),
+        default="auto",
+        help="Execution strategy. auto tries fetch, browser+HAR, then guarded HTTP.",
+    )
     parser.add_argument("--profile-slug")
     args = parser.parse_args()
     try:
@@ -51,6 +57,7 @@ def main() -> int:
                 url=args.url,
                 adults=args.adults,
                 limit=args.limit,
+                transport=args.transport,
                 profile_slug=args.profile_slug,
             )
         )

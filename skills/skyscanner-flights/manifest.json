@@ -23,6 +23,7 @@
       {"name": "url", "type": "string", "required": false, "default": ""},
       {"name": "adults", "type": "integer", "required": false, "default": 1},
       {"name": "limit", "type": "integer", "required": false, "default": 20},
+      {"name": "transport", "type": "string", "required": false, "default": "auto"},
       {"name": "profile_slug", "type": "string", "required": false, "default": "skyscanner"}
     ]
   }],

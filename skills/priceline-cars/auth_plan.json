@@ -1,0 +1,10 @@
+{
+  "profile_slug": "priceline",
+  "profile_db_id": null,
+  "strategy": "tabby_credentials",
+  "target_domains": ["priceline.com", "www.priceline.com"],
+  "required_auth": {"headers": [], "cookies": []},
+  "observed_workflow_headers": {},
+  "tabby_export": {"credential_types": {"headers": [], "cookies": []}, "runtime_identifier": "priceline"},
+  "fallbacks": []
+}

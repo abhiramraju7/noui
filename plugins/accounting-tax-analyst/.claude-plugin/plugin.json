@@ -1,0 +1,22 @@
+{
+  "name": "accounting-tax-analyst",
+  "description": "Claude Code plugin for NoUI accounting, invoicing, bookkeeping, and tax analysis workflows across Wave, FreshBooks, Xero, Zoho Books, and Odoo.",
+  "version": "0.1.0",
+  "author": {
+    "name": "TODO: plugin author",
+    "email": "TODO@example.com"
+  },
+  "homepage": "https://example.com/accounting-tax-analyst",
+  "keywords": [
+    "accounting",
+    "invoicing",
+    "bookkeeping",
+    "tax",
+    "noui",
+    "wave",
+    "freshbooks",
+    "xero",
+    "zoho-books",
+    "odoo"
+  ]
+}

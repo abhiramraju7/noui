@@ -69,6 +69,9 @@ def _generated_module(env: dict):
             "NOUI_ENV_FILE",
         ):
             os.environ.pop(key, None)
+        os.environ["NOUI_ENV_FILE"] = os.path.join(
+            tempfile.gettempdir(), "noui_missing_execute_adapter.env"
+        )
         os.environ.update(env)
         g: dict = {"__file__": os.path.join(tempfile.gettempdir(), "noui_gen_execute_test.py")}
         exec(compile(_generated(), "<generated>", "exec"), g)
